@@ -32,8 +32,12 @@ module.exports = fp(async function (fastify, options) {
     ]
   });
 
-  fastify.register(async (fastify, options) => {
-    await fastify.sequelize.syncPromiseResolve;
-    await fastify[options.name].services.includeTemplate(options.templateDir);
-  }, options);
+  fastify.register(
+    fp((fastify, options) => {
+      fastify.sequelize.syncPromise.then(() => {
+        return fastify[options.name].services.includeTemplate(options.templateDir);
+      });
+    }),
+    options
+  );
 });
