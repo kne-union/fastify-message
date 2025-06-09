@@ -20,8 +20,10 @@ module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
   const includeTemplate = async dir => {
     if (!(await fs.exists(dir))) {
+      console.log('template dir not exists');
       return;
     }
+    console.log('------start include template------');
     const list = await fs.readdir(dir);
     for (const file of list) {
       const filePath = path.join(dir, file);
@@ -43,9 +45,9 @@ module.exports = fp(async (fastify, options) => {
         codeTemplate.content = content;
         codeTemplate.name = name;
         await codeTemplate.save();
+        console.log(`update template: ${code}`);
         continue;
       }
-
       await models.template.create({
         code,
         type,
@@ -53,7 +55,9 @@ module.exports = fp(async (fastify, options) => {
         content,
         level: 0
       });
+      console.log(`create template: ${code}`);
     }
+    console.log('------end include template------');
   };
 
   const parseTemplate = text => {
