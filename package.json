@@ -1,6 +1,6 @@
 {
   "name": "@kne/fastify-message",
-  "version": "1.0.0-alpha.2",
+  "version": "1.0.0-alpha.3",
   "description": "管理消息发送，支持sms消息，email消息等.",
   "main": "index.js",
   "scripts": {
