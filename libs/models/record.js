@@ -11,8 +11,8 @@ module.exports = ({ DataTypes, options }) => {
         comment: '发送类型: 0:邮件'
       },
       code: {
-        type: DataTypes.INTEGER,
-        comment: '消息类型: 1:账号验证码'
+        type: DataTypes.STRING,
+        comment: '模版编码'
       },
       props: {
         type: DataTypes.JSON,

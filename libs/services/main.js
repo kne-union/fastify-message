@@ -5,7 +5,7 @@ const template = require('lodash/template');
 const merge = require('lodash/merge');
 const nodemailer = require('nodemailer');
 const { convert } = require('html-to-text');
-const pify = require('pify');
+const pify = require('pify').default;
 
 module.exports = fp(async (fastify, options) => {
   const emailConfig = Object.assign(
@@ -25,7 +25,7 @@ module.exports = fp(async (fastify, options) => {
     const list = await fs.readdir(dir);
     for (const file of list) {
       const filePath = path.join(dir, file);
-      const content = fs.readFile(filePath, 'utf8');
+      const content = await fs.readFile(filePath, 'utf8');
       const filename = file.replace(path.extname(file), '');
       const tempArray = filename.split('_');
       const code = tempArray[0],
@@ -38,12 +38,14 @@ module.exports = fp(async (fastify, options) => {
           level: 0
         }
       });
+
       if (codeTemplate) {
         codeTemplate.content = content;
         codeTemplate.name = name;
         await codeTemplate.save();
         continue;
       }
+
       await models.template.create({
         code,
         type,
@@ -61,8 +63,7 @@ module.exports = fp(async (fastify, options) => {
 
     while ((match = regex.exec(text)) !== null) {
       const fieldName = match[1].trim();
-      const fieldValue = match[2].trim();
-      result[fieldName] = fieldValue.replace(/\n/g, '\\n');
+      result[fieldName] = match[2].trim();
     }
 
     return result;
@@ -91,7 +92,8 @@ module.exports = fp(async (fastify, options) => {
     };
   };
 
-  const sendMessage = async ({ type = 0, name, props, code, level = 0, client, options }) => {
+  const sendMessage = async ({ type = 0, name, props, code, level = 0, client, options: targetOptions }) => {
+    targetOptions = Object.assign({}, targetOptions);
     if (type === 0) {
       const currentClient = merge(
         {},
@@ -108,19 +110,19 @@ module.exports = fp(async (fastify, options) => {
       );
       const smtp = nodemailer.createTransport(currentClient);
 
-      const { content, type, templateId } = await messageTemplate({ code, type, level, props });
+      const { content, templateId } = await messageTemplate({ code, type, level, props });
 
       const mailOptions = {
-        ...options,
-        from: `"${options.title || emailConfig.user}" <${emailConfig.user}>`,
+        ...targetOptions,
+        from: `"${targetOptions.title || emailConfig.user}" <${emailConfig.user}>`,
         to: name,
         subject: content.subject || options.subject || emailConfig.defaultSubject || 'Message reminder',
-        html: content.html,
         text: content.text || convert(content.html),
+        html: content.html,
         attachments: options.attachments || []
       };
 
-      if (isTest) {
+      if (!isTest) {
         await pify(smtp.sendMail.bind(smtp))(mailOptions);
       }
 
