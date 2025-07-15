@@ -5,7 +5,7 @@ const template = require('lodash/template');
 const merge = require('lodash/merge');
 const nodemailer = require('nodemailer');
 const { convert } = require('html-to-text');
-const pify = require('pify').default;
+const pify = require('pify');
 
 module.exports = fp(async (fastify, options) => {
   const emailConfig = Object.assign(
