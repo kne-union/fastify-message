@@ -98,40 +98,50 @@ module.exports = fp(async (fastify, options) => {
 
   const sendMessage = async ({ type = 0, name, props, code, level = 0, client, options: targetOptions }) => {
     targetOptions = Object.assign({}, targetOptions);
-    if (type === 0) {
-      const currentClient = merge(
-        {},
-        {
-          host: emailConfig.host,
-          port: emailConfig.port,
-          secure: emailConfig.secure,
-          auth: {
-            user: emailConfig.user,
-            pass: emailConfig.pass
-          }
-        },
-        client
-      );
-      const smtp = nodemailer.createTransport(currentClient);
+    const { content, templateId } = await messageTemplate({ code, type, level, props });
+    const sendOptions = await (async () => {
+      if (type === 0) {
+        const currentClient = merge(
+          {},
+          {
+            host: emailConfig.host,
+            port: emailConfig.port,
+            secure: emailConfig.secure,
+            auth: {
+              user: emailConfig.user,
+              pass: emailConfig.pass
+            }
+          },
+          client
+        );
+        const smtp = nodemailer.createTransport(currentClient);
 
-      const { content, templateId } = await messageTemplate({ code, type, level, props });
+        const mailOptions = {
+          ...targetOptions,
+          from: `"${targetOptions.title || emailConfig.user}" <${emailConfig.user}>`,
+          to: name,
+          subject: content.subject || options.subject || emailConfig.defaultSubject || 'Message reminder',
+          text: content.text || convert(content.html),
+          html: content.html,
+          attachments: options.attachments || []
+        };
 
-      const mailOptions = {
-        ...targetOptions,
-        from: `"${targetOptions.title || emailConfig.user}" <${emailConfig.user}>`,
-        to: name,
-        subject: content.subject || options.subject || emailConfig.defaultSubject || 'Message reminder',
-        text: content.text || convert(content.html),
-        html: content.html,
-        attachments: options.attachments || []
-      };
-
-      if (!isTest) {
-        await pify(smtp.sendMail.bind(smtp))(mailOptions);
+        if (!isTest) {
+          await pify(smtp.sendMail.bind(smtp))(mailOptions);
+        }
+        return mailOptions;
       }
+      const currentSender = options.senders?.[type];
+      if (typeof currentSender === 'function') {
+        const { content, templateId } = await messageTemplate({ code, type, level, props });
+        if (!isTest) {
+          return await currentSender({ code, templateId, content, props, name, type, level, options: targetOptions });
+        }
 
-      await models.record.create({ type, code, templateId, props, name, content: mailOptions });
-    }
+        return { content, props, level, options: targetOptions };
+      }
+    })(type);
+    await models.record.create({ type, code, templateId, props, name, content: sendOptions });
   };
 
   Object.assign(fastify[options.name].services, {
