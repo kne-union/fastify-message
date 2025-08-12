@@ -12,7 +12,8 @@ module.exports = fp(async function (fastify, options) {
           throw new Error('fastify-account plugin must be registered before fastify-trtc-conference,or set options.getUserModel');
         }
         return fastify.account.models.user;
-      }
+      },
+      senders: {}
     },
     options
   );
