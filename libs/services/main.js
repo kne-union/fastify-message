@@ -83,13 +83,6 @@ module.exports = fp(async (fastify, options) => {
     const sendOptions = await (async () => {
       const currentSender = options.senders?.[type];
       if (type === 0) {
-        const currentClient = merge({}, {
-          host: emailConfig.host, port: emailConfig.port, secure: emailConfig.secure, auth: {
-            user: emailConfig.user, pass: emailConfig.pass
-          }
-        }, client);
-        const smtp = nodemailer.createTransport(currentClient);
-
         const mailOptions = {
           ...targetOptions,
           from: `"${targetOptions.title || emailConfig.user}" <${emailConfig.user}>`,
@@ -104,6 +97,12 @@ module.exports = fp(async (fastify, options) => {
           if (typeof currentSender === 'function') {
             await currentSender(mailOptions);
           } else {
+            const currentClient = merge({}, {
+              host: emailConfig.host, port: emailConfig.port, secure: emailConfig.secure, auth: {
+                user: emailConfig.user, pass: emailConfig.pass
+              }
+            }, client);
+            const smtp = nodemailer.createTransport(currentClient);
             await pify(smtp.sendMail.bind(smtp))(mailOptions);
           }
         }
