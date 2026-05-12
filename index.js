@@ -13,7 +13,15 @@ module.exports = fp(async function (fastify, options) {
         }
         return fastify.account.models.user;
       },
-      senders: {}
+      senders: {},
+      getAuthenticate: (type) => {
+        switch (type) {
+          case 'record':
+          case 'template':
+          default:
+            return [];
+        }
+      }
     },
     options
   );
@@ -29,7 +37,8 @@ module.exports = fp(async function (fastify, options) {
           getUserModel: options.getUserModel
         })
       ],
-      ['services', path.resolve(__dirname, './libs/services')]
+      ['services', path.resolve(__dirname, './libs/services')],
+      ['controllers', path.resolve(__dirname, './libs/controllers')]
     ]
   });
 
