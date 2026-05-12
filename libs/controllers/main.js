@@ -16,9 +16,15 @@ module.exports = fp(async (fastify, options) => {
           properties: {
             currentPage: { type: 'integer', default: 1, description: '页码' },
             perPage: { type: 'integer', default: 20, description: '每页数量' },
-            'filter[type]': { type: 'integer', description: '发送类型: 0=邮件, 1=短信' },
-            'filter[code]': { type: 'string', description: '模板编码' },
-            'filter[name]': { type: 'string', description: '发送对象（邮箱/手机号）' }
+            filter: {
+              type: 'object',
+              default: {},
+              properties: {
+                type: { type: 'integer', description: '发送类型: 0=邮件, 1=短信' },
+                code: { type: 'string', description: '模板编码' },
+                name: { type: 'string', description: '发送对象（邮箱/手机号）' }
+              }
+            }
           }
         },
         response: {
@@ -34,11 +40,11 @@ module.exports = fp(async (fastify, options) => {
                   type: 'object',
                   properties: {
                     id: { type: 'string', description: '记录ID' },
-                    name: { type: 'string', description: '发送对象' },
-                    type: { type: 'integer', description: '发送类型' },
+                    name: { type: 'string', description: '发送对象（邮箱/手机号）' },
+                    type: { type: 'integer', description: '发送类型: 0=邮件, 1=短信' },
                     code: { type: 'string', description: '模板编码' },
-                    props: { type: 'object', description: '模板变量' },
-                    content: { type: 'object', description: '消息内容' },
+                    props: { type: 'object', description: '模板变量', additionalProperties: true },
+                    content: { type: 'object', description: '消息内容', additionalProperties: true },
                     templateId: { type: 'string', description: '模板ID' },
                     createdAt: { type: 'string', description: '创建时间' }
                   }
@@ -50,15 +56,55 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     async request => {
-      const { currentPage = 1, perPage = 20 } = request.query;
-      const { 'filter[type]': type, 'filter[code]': code, 'filter[name]': name } = request.query;
+      const { currentPage = 1, perPage = 20, filter = {} } = request.query;
+      const { type, code, name } = filter;
       
-      const filter = {};
-      if (type !== undefined) filter.type = type;
-      if (code) filter.code = code;
-      if (name) filter.name = name;
+      const where = {};
+      if (type !== undefined) where.type = type;
+      if (code) where.code = code;
+      if (name) where.name = name;
       
-      return await services.record.list({ filter, perPage, currentPage });
+      return await services.record.list({ filter: where, perPage, currentPage });
+    }
+  );
+
+  // 发送消息
+  fastify.post(
+    `${options.prefix}/templates/send`,
+    {
+      onRequest: options.getAuthenticate('template:send'),
+      schema: {
+        description: '根据模版发送消息',
+        summary: '发送消息',
+        body: {
+          type: 'object',
+          required: ['templateId', 'name'],
+          properties: {
+            templateId: { type: 'string', description: '模版ID' },
+            name: { type: 'string', description: '发送对象（邮箱/手机号）' },
+            props: { type: 'object', description: '模版变量', additionalProperties: true }
+          }
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              success: { type: 'boolean', description: '是否发送成功' }
+            }
+          }
+        }
+      }
+    },
+    async request => {
+      const { templateId, name, props = {} } = request.body;
+      try {
+        return await services.template.send({ templateId, name, props });
+      } catch (error) {
+        if (error.message === '模版已禁用，无法发送消息') {
+          throw fastify.httpErrors.badRequest(error.message);
+        }
+        throw fastify.httpErrors.notFound(error.message);
+      }
     }
   );
 
@@ -82,11 +128,11 @@ module.exports = fp(async (fastify, options) => {
             type: 'object',
             properties: {
               id: { type: 'string', description: '记录ID' },
-              name: { type: 'string', description: '发送对象' },
-              type: { type: 'integer', description: '发送类型' },
+              name: { type: 'string', description: '发送对象（邮箱/手机号）' },
+              type: { type: 'integer', description: '发送类型: 0=邮件, 1=短信' },
               code: { type: 'string', description: '模板编码' },
-              props: { type: 'object', description: '模板变量' },
-              content: { type: 'object', description: '消息内容' },
+              props: { type: 'object', description: '模板变量', additionalProperties: true },
+              content: { type: 'object', description: '消息内容', additionalProperties: true },
               templateId: { type: 'string', description: '模板ID' },
               createdAt: { type: 'string', description: '创建时间' }
             }
@@ -117,10 +163,16 @@ module.exports = fp(async (fastify, options) => {
           properties: {
             currentPage: { type: 'integer', default: 1, description: '页码' },
             perPage: { type: 'integer', default: 20, description: '每页数量' },
-            'filter[type]': { type: 'integer', description: '模版类型: 0=邮件, 1=短信' },
-            'filter[code]': { type: 'string', description: '模版编码' },
-            'filter[level]': { type: 'integer', description: '模版级别: 0=系统, 1=业务' },
-            'filter[status]': { type: 'integer', description: '状态: 0=启用, 1=禁用' }
+            filter: {
+              type: 'object',
+              default: {},
+              properties: {
+                type: { type: 'integer', description: '模版类型: 0=邮件, 1=短信' },
+                code: { type: 'string', description: '模版编码' },
+                level: { type: 'integer', description: '模版级别: 0=系统, 1=业务' },
+                status: { type: 'integer', description: '状态: 0=启用, 1=禁用' }
+              }
+            }
           }
         },
         response: {
@@ -138,9 +190,9 @@ module.exports = fp(async (fastify, options) => {
                     id: { type: 'string', description: '模版ID' },
                     name: { type: 'string', description: '模版名称' },
                     code: { type: 'string', description: '模版编码' },
-                    type: { type: 'integer', description: '模版类型' },
-                    level: { type: 'integer', description: '模版级别' },
-                    status: { type: 'integer', description: '状态' },
+                    type: { type: 'integer', description: '模版类型: 0=邮件, 1=短信' },
+                    level: { type: 'integer', description: '模版级别: 0=系统, 1=业务' },
+                    status: { type: 'integer', description: '状态: 0=启用, 1=禁用' },
                     content: { type: 'string', description: '模版内容' },
                     createdAt: { type: 'string', description: '创建时间' }
                   }
@@ -152,16 +204,16 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     async request => {
-      const { currentPage = 1, perPage = 20 } = request.query;
-      const { 'filter[type]': type, 'filter[code]': code, 'filter[level]': level, 'filter[status]': status } = request.query;
+      const { currentPage = 1, perPage = 20, filter = {} } = request.query;
+      const { type, code, level, status } = filter;
       
-      const filter = {};
-      if (type !== undefined) filter.type = type;
-      if (code) filter.code = code;
-      if (level !== undefined) filter.level = level;
-      if (status !== undefined) filter.status = status;
+      const where = {};
+      if (type !== undefined) where.type = type;
+      if (code) where.code = code;
+      if (level !== undefined) where.level = level;
+      if (status !== undefined) where.status = status;
       
-      return await services.template.list({ filter, perPage, currentPage });
+      return await services.template.list({ filter: where, perPage, currentPage });
     }
   );
 
@@ -187,9 +239,9 @@ module.exports = fp(async (fastify, options) => {
               id: { type: 'string', description: '模版ID' },
               name: { type: 'string', description: '模版名称' },
               code: { type: 'string', description: '模版编码' },
-              type: { type: 'integer', description: '模版类型' },
-              level: { type: 'integer', description: '模版级别' },
-              status: { type: 'integer', description: '状态' },
+              type: { type: 'integer', description: '模版类型: 0=邮件, 1=短信' },
+              level: { type: 'integer', description: '模版级别: 0=系统, 1=业务' },
+              status: { type: 'integer', description: '状态: 0=启用, 1=禁用' },
               content: { type: 'string', description: '模版内容' },
               createdAt: { type: 'string', description: '创建时间' }
             }

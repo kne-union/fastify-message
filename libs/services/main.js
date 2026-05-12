@@ -174,6 +174,24 @@ module.exports = fp(async (fastify, options) => {
           throw new Error('模版不存在');
         }
         return template;
+      },
+
+      send: async ({ templateId, name, props = {} }) => {
+        const tpl = await models.template.findByPk(templateId);
+        if (!tpl) {
+          throw new Error('模版不存在');
+        }
+        if (tpl.status !== 0) {
+          throw new Error('模版已禁用，无法发送消息');
+        }
+        await sendMessage({
+          type: tpl.type,
+          name,
+          props,
+          code: tpl.code,
+          level: tpl.level
+        });
+        return { success: true };
       }
     }
   });
