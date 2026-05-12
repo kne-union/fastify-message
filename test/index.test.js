@@ -4,6 +4,7 @@ const fp = require('fastify-plugin');
 const path = require('node:path');
 const fs = require('fs-extra');
 const { DataTypes } = require('sequelize');
+const qs = require('qs');
 
 describe('@kne/fastify-message', function () {
   this.timeout(10000);
@@ -30,7 +31,11 @@ describe('@kne/fastify-message', function () {
   };
 
   const createFastify = async (options = {}) => {
-    const fastify = Fastify();
+    const fastify = Fastify({
+      routerOptions: {
+        querystringParser: str => qs.parse(str)
+      }
+    });
     
     // 注册 @fastify/sensible 以支持 httpErrors
     await fastify.register(require('@fastify/sensible'));
@@ -502,6 +507,8 @@ describe('@kne/fastify-message', function () {
         const body = JSON.parse(response.body);
         expect(body.code).to.equal('test');
         expect(body.name).to.equal('test@example.com');
+        expect(body.props).to.deep.equal({ key: 'value' });
+        expect(body.content).to.deep.equal({ subject: '主题' });
       });
 
       it('should return 404 when record not found', async () => {
@@ -511,6 +518,50 @@ describe('@kne/fastify-message', function () {
         });
 
         expect(response.statusCode).to.equal(404);
+      });
+
+      it('should return record with content containing subject and body', async () => {
+        const { models } = fastify.message;
+
+        const record = await models.record.create({
+          code: 'INVITEINTERVIEW',
+          type: 0,
+          name: 'candidate@example.com',
+          props: { candidateName: '张三', interviewTime: '2026-05-10 14:00' },
+          content: { subject: '面试邀请', body: '尊敬的张三，您好！' }
+        });
+
+        const response = await fastify.inject({
+          method: 'GET',
+          url: `/api/message/records/${record.id}`
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.content.subject).to.equal('面试邀请');
+        expect(body.content.body).to.equal('尊敬的张三，您好！');
+      });
+
+      it('should return record with sms content containing only body', async () => {
+        const { models } = fastify.message;
+
+        const record = await models.record.create({
+          code: 'INVITEINTERVIEW',
+          type: 1,
+          name: '+86 13800138000',
+          props: { candidateName: '李四', interviewTime: '2026-05-11 10:00' },
+          content: { body: '【LeapIn】尊敬的李四，面试时间为2026-05-11 10:00。' }
+        });
+
+        const response = await fastify.inject({
+          method: 'GET',
+          url: `/api/message/records/${record.id}`
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.type).to.equal(1);
+        expect(body.content.body).to.exist;
       });
     });
 
@@ -638,6 +689,215 @@ describe('@kne/fastify-message', function () {
         });
 
         expect(response.statusCode).to.equal(404);
+      });
+    });
+
+    describe('发送消息接口测试', () => {
+      it('should send message via template', async () => {
+        const { models } = fastify.message;
+
+        const tpl = await models.template.create({
+          code: 'welcome',
+          type: 0,
+          name: '欢迎邮件',
+          content: '<!-- subject -->欢迎<!-- html --><p>你好</p>',
+          level: 0,
+          status: 0
+        });
+
+        const response = await fastify.inject({
+          method: 'POST',
+          url: '/api/message/templates/send',
+          payload: {
+            templateId: String(tpl.id),
+            name: 'user@example.com',
+            props: {}
+          }
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.success).to.equal(true);
+
+        const records = await models.record.findAll({ where: { code: 'welcome' } });
+        expect(records.length).to.equal(1);
+        expect(records[0].name).to.equal('user@example.com');
+      });
+
+      it('should send SMS message with custom sender', async () => {
+        const senderFastify = await createFastify({
+          senders: {
+            1: async (data) => {
+              return data;
+            }
+          }
+        });
+
+        const tpl = await senderFastify.message.models.template.create({
+          code: 'sms_notify',
+          type: 1,
+          name: '短信通知',
+          content: '<!-- subject -->通知<!-- html -->内容',
+          level: 0,
+          status: 0
+        });
+
+        const response = await senderFastify.inject({
+          method: 'POST',
+          url: '/api/message/templates/send',
+          payload: {
+            templateId: String(tpl.id),
+            name: '13800138000',
+            props: {}
+          }
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.success).to.equal(true);
+
+        const records = await senderFastify.message.models.record.findAll({ where: { code: 'sms_notify' } });
+        expect(records.length).to.equal(1);
+        expect(records[0].type).to.equal(1);
+        expect(records[0].name).to.equal('13800138000');
+
+        await senderFastify.close();
+      });
+
+      it('should return 404 when template not found', async () => {
+        const response = await fastify.inject({
+          method: 'POST',
+          url: '/api/message/templates/send',
+          payload: {
+            templateId: '999999',
+            name: 'user@example.com'
+          }
+        });
+
+        expect(response.statusCode).to.equal(404);
+      });
+
+      it('should return 400 when template is disabled', async () => {
+        const { models } = fastify.message;
+
+        const tpl = await models.template.create({
+          code: 'disabled_tpl',
+          type: 0,
+          name: '已禁用模板',
+          content: '',
+          level: 0,
+          status: 1
+        });
+
+        const response = await fastify.inject({
+          method: 'POST',
+          url: '/api/message/templates/send',
+          payload: {
+            templateId: String(tpl.id),
+            name: 'user@example.com'
+          }
+        });
+
+        expect(response.statusCode).to.equal(400);
+      });
+
+      it('should require templateId and name', async () => {
+        const response = await fastify.inject({
+          method: 'POST',
+          url: '/api/message/templates/send',
+          payload: {}
+        });
+
+        expect(response.statusCode).to.equal(400);
+      });
+    });
+
+    describe('getAuthenticate 权限测试', () => {
+      it('should allow access with default getAuthenticate (no auth)', async () => {
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/records'
+        });
+
+        expect(response.statusCode).to.equal(200);
+      });
+
+      it('should allow access to templates with default getAuthenticate', async () => {
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/templates'
+        });
+
+        expect(response.statusCode).to.equal(200);
+      });
+
+      it('should block access when getAuthenticate returns auth middleware', async () => {
+        const authFastify = await createFastify({
+          getAuthenticate: (type) => {
+            return [async (request, reply) => {
+              reply.code(401).send({ error: 'Unauthorized' });
+            }];
+          }
+        });
+
+        const response = await authFastify.inject({
+          method: 'GET',
+          url: '/api/message/records'
+        });
+
+        expect(response.statusCode).to.equal(401);
+
+        await authFastify.close();
+      });
+
+      it('should differentiate authenticate types for record and template', async () => {
+        const accessedTypes = [];
+        const authFastify = await createFastify({
+          getAuthenticate: (type) => {
+            accessedTypes.push(type);
+            return [];
+          }
+        });
+
+        await authFastify.inject({ method: 'GET', url: '/api/message/records' });
+        await authFastify.inject({ method: 'GET', url: '/api/message/templates' });
+
+        expect(accessedTypes).to.include('record');
+        expect(accessedTypes).to.include('template');
+
+        await authFastify.close();
+      });
+
+      it('should apply record authenticate type to record detail', async () => {
+        const accessedTypes = [];
+        const authFastify = await createFastify({
+          getAuthenticate: (type) => {
+            accessedTypes.push(type);
+            return [];
+          }
+        });
+
+        await authFastify.inject({ method: 'GET', url: '/api/message/records/999999' });
+
+        expect(accessedTypes).to.include('record');
+
+        await authFastify.close();
+      });
+
+      it('should apply template authenticate type to template detail', async () => {
+        const accessedTypes = [];
+        const authFastify = await createFastify({
+          getAuthenticate: (type) => {
+            accessedTypes.push(type);
+            return [];
+          }
+        });
+
+        await authFastify.inject({ method: 'GET', url: '/api/message/templates/999999' });
+
+        expect(accessedTypes).to.include('template');
+
+        await authFastify.close();
       });
     });
   });

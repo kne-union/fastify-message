@@ -7,6 +7,7 @@ module.exports = fp(async function (fastify, options) {
     {
       name: 'message',
       dbTableNamePrefix: 't_message_',
+      prefix: '/api/v1/message',
       getUserModel: () => {
         if (!fastify.account) {
           throw new Error('fastify-account plugin must be registered before fastify-trtc-conference,or set options.getUserModel');
