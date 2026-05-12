@@ -1,3 +1,174 @@
+### HTTP 接口 (API)
+
+基础路径：`/api/v1/message`
+
+---
+
+#### GET /records
+
+获取消息发送记录列表。
+
+**权限类型**：`record`
+
+**查询参数**：
+
+| 参数             | 类型     | 必填 | 默认值 | 描述                   |
+|----------------|--------|----|-----|----------------------|
+| currentPage    | Number | 否  | 1   | 页码                   |
+| perPage        | Number | 否  | 20  | 每页数量                 |
+| filter[type]   | Number | 否  | -   | 发送类型：0=邮件，1=短信      |
+| filter[code]   | String | 否  | -   | 模板编码（精确匹配）           |
+| filter[name]   | String | 否  | -   | 发送对象/邮箱/手机号（精确匹配）   |
+
+**响应示例**：
+
+```json
+{
+  "totalCount": 100,
+  "currentPage": 1,
+  "perPage": 20,
+  "pageData": [
+    {
+      "id": "1",
+      "name": "user@example.com",
+      "type": 0,
+      "code": "welcome",
+      "props": { "username": "John" },
+      "content": { "subject": "欢迎", "html": "<p>你好</p>" },
+      "templateId": "1",
+      "createdAt": "2026-05-12T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+#### GET /records/:id
+
+获取单条发送记录详情。
+
+**权限类型**：`record`
+
+**路径参数**：
+
+| 参数 | 类型     | 必填 | 描述   |
+|----|--------|----|------|
+| id | String | 是  | 记录ID |
+
+**错误响应**：
+
+| 状态码 | 描述   |
+|-----|------|
+| 404 | 记录不存在 |
+
+---
+
+#### GET /templates
+
+获取消息模版列表。
+
+**权限类型**：`template`
+
+**查询参数**：
+
+| 参数              | 类型     | 必填 | 默认值 | 描述               |
+|-----------------|--------|----|-----|------------------|
+| currentPage     | Number | 否  | 1   | 页码               |
+| perPage         | Number | 否  | 20  | 每页数量             |
+| filter[type]    | Number | 否  | -   | 模版类型：0=邮件，1=短信  |
+| filter[code]    | String | 否  | -   | 模版编码（精确匹配）       |
+| filter[level]   | Number | 否  | -   | 模版级别：0=系统，1=业务  |
+| filter[status]  | Number | 否  | -   | 状态：0=启用，1=禁用    |
+
+**响应示例**：
+
+```json
+{
+  "totalCount": 10,
+  "currentPage": 1,
+  "perPage": 20,
+  "pageData": [
+    {
+      "id": "1",
+      "name": "欢迎邮件",
+      "code": "welcome",
+      "type": 0,
+      "level": 0,
+      "status": 0,
+      "content": "<!-- subject -->欢迎<!-- html --><p>你好</p>",
+      "createdAt": "2026-05-12T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+#### GET /templates/:id
+
+获取单个消息模版详情。
+
+**权限类型**：`template`
+
+**路径参数**：
+
+| 参数 | 类型     | 必填 | 描述   |
+|----|--------|----|------|
+| id | String | 是  | 模版ID |
+
+**错误响应**：
+
+| 状态码 | 描述   |
+|-----|------|
+| 404 | 模版不存在 |
+
+---
+
+#### POST /templates/send
+
+根据模版发送消息。模版类型由模版自身决定，无需指定。
+
+**权限类型**：`template:send`
+
+**请求体**：
+
+| 参数        | 类型     | 必填 | 描述              |
+|-----------|--------|----|-----------------|
+| templateId | String | 是  | 模版ID            |
+| name      | String | 是  | 发送对象（邮箱/手机号）   |
+| props     | Object | 否  | 模版变量            |
+
+**请求示例**：
+
+```json
+{
+  "templateId": "1",
+  "name": "user@example.com",
+  "props": {
+    "username": "John",
+    "content": "Welcome!"
+  }
+}
+```
+
+**响应示例**：
+
+```json
+{
+  "success": true
+}
+```
+
+**错误响应**：
+
+| 状态码 | 描述         |
+|-----|------------|
+| 400 | 模版已禁用，无法发送消息 |
+| 404 | 模版不存在      |
+
+---
+
 ### 服务方法 (Services)
 
 #### includeTemplate
@@ -109,6 +280,76 @@ await fastify.message.services.sendMessage({
   }
 });
 ```
+
+#### record.list
+
+查询发送记录列表。
+
+| 参数         | 类型     | 必填 | 默认值 | 描述   |
+|------------|--------|----|-----|------|
+| filter     | Object | 否  | {}  | 过滤条件 |
+| perPage    | Number | 否  | 20  | 每页数量 |
+| currentPage | Number | 否  | 1   | 页码   |
+
+filter 支持的字段：`type`、`code`、`name`
+
+#### record.detail
+
+获取单条发送记录详情。
+
+| 参数 | 类型     | 必填 | 描述   |
+|----|--------|----|------|
+| id | String | 是  | 记录ID |
+
+#### template.list
+
+查询消息模版列表。
+
+| 参数         | 类型     | 必填 | 默认值 | 描述   |
+|------------|--------|----|-----|------|
+| filter     | Object | 否  | {}  | 过滤条件 |
+| perPage    | Number | 否  | 20  | 每页数量 |
+| currentPage | Number | 否  | 1   | 页码   |
+
+filter 支持的字段：`type`、`code`、`level`、`status`
+
+#### template.detail
+
+获取单个消息模版详情。
+
+| 参数 | 类型     | 必填 | 描述   |
+|----|--------|----|------|
+| id | String | 是  | 模版ID |
+
+#### template.send
+
+根据模版ID发送消息。
+
+| 参数        | 类型     | 必填 | 默认值 | 描述            |
+|-----------|--------|----|-----|---------------|
+| templateId | String | 是  | -   | 模版ID          |
+| name      | String | 是  | -   | 接收者（邮箱/手机号）   |
+| props     | Object | 否  | {}  | 模版变量          |
+
+| 返回值字段   | 类型      | 描述     |
+|---------|---------|--------|
+| success | Boolean | 是否发送成功 |
+
+错误：
+- 模版不存在 → 抛出 `Error('模版不存在')`
+- 模版已禁用 → 抛出 `Error('模版已禁用，无法发送消息')`
+
+示例：
+
+```javascript
+const result = await fastify.message.services.template.send({
+  templateId: '1',
+  name: 'user@example.com',
+  props: { username: 'John' }
+});
+```
+
+---
 
 ### 数据模型 (Models)
 
