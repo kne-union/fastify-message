@@ -121,6 +121,60 @@ module.exports = fp(async (fastify, options) => {
   };
 
   Object.assign(fastify[options.name].services, {
-    includeTemplate, messageTemplate, parseTemplate, sendMessage
+    includeTemplate, messageTemplate, parseTemplate, sendMessage,
+    
+    // 发送记录相关服务
+    record: {
+      list: async ({ filter = {}, perPage = 20, currentPage = 1 }) => {
+        const { count, rows } = await models.record.findAndCountAll({
+          where: filter,
+          limit: perPage,
+          offset: (currentPage - 1) * perPage,
+          order: [['createdAt', 'DESC']]
+        });
+        
+        return {
+          pageData: rows,
+          totalCount: count,
+          perPage,
+          currentPage
+        };
+      },
+      
+      detail: async ({ id }) => {
+        const record = await models.record.findByPk(id);
+        if (!record) {
+          throw new Error('记录不存在');
+        }
+        return record;
+      }
+    },
+    
+    // 消息模版相关服务
+    template: {
+      list: async ({ filter = {}, perPage = 20, currentPage = 1 }) => {
+        const { count, rows } = await models.template.findAndCountAll({
+          where: filter,
+          limit: perPage,
+          offset: (currentPage - 1) * perPage,
+          order: [['createdAt', 'DESC']]
+        });
+        
+        return {
+          pageData: rows,
+          totalCount: count,
+          perPage,
+          currentPage
+        };
+      },
+      
+      detail: async ({ id }) => {
+        const template = await models.template.findByPk(id);
+        if (!template) {
+          throw new Error('模版不存在');
+        }
+        return template;
+      }
+    }
   });
 });
