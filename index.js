@@ -17,6 +17,8 @@ module.exports = fp(async function(fastify, options) {
     }
   }, options);
 
+  fastify.register(require('@fastify/sse'));
+
   fastify.register(require('@kne/fastify-namespace'), {
     name: options.name,
     options,
@@ -25,9 +27,8 @@ module.exports = fp(async function(fastify, options) {
     })], ['services', path.resolve(__dirname, './libs/services')], ['controllers', path.resolve(__dirname, './libs/controllers')]]
   });
 
-  fastify.register(fp((fastify, options) => {
-    fastify.sequelize.syncPromise.then(() => {
-      return fastify[options.name].services.includeTemplate(options.templateDir);
-    });
+  fastify.register(fp(async (fastify, options) => {
+    await fastify.sequelize.syncPromise;
+    await fastify[options.name].services.includeTemplate(options.templateDir);
   }), options);
 });

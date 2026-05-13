@@ -64,7 +64,7 @@ module.exports = fp(async (fastify, options) => {
       if (code) where.code = code;
       if (name) where.name = name;
       
-      return await services.record.list({ filter: where, perPage, currentPage });
+      return await services.record.list({ filter: where, perPage: Math.min(perPage, 100), currentPage });
     }
   );
 
@@ -103,7 +103,10 @@ module.exports = fp(async (fastify, options) => {
         if (error.message === '模版已禁用，无法发送消息') {
           throw fastify.httpErrors.badRequest(error.message);
         }
-        throw fastify.httpErrors.notFound(error.message);
+        if (error.message === '模版不存在' || error.message === 'template not found') {
+          throw fastify.httpErrors.notFound(error.message);
+        }
+        throw error;
       }
     }
   );
@@ -145,8 +148,128 @@ module.exports = fp(async (fastify, options) => {
       try {
         return await services.record.detail({ id });
       } catch (error) {
-        throw fastify.httpErrors.notFound(error.message);
+        if (error.message === '记录不存在') {
+          throw fastify.httpErrors.notFound(error.message);
+        }
+        throw error;
       }
+    }
+  );
+
+  // 获取统计数据概览
+  fastify.get(
+    `${options.prefix}/statistics`,
+    {
+      onRequest: options.getAuthenticate('statistics'),
+      schema: {
+        description: '获取消息统计数据概览',
+        summary: '统计数据概览',
+        querystring: {
+          type: 'object',
+          properties: {
+            range: { type: 'string', default: '7d', description: '时间范围: 7d=近7天, 1m=近1个月, 1y=近1年' }
+          }
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              range: { type: 'string', description: '当前时间范围' },
+              rangeLabel: { type: 'string', description: '时间范围描述' },
+              totalRecords: { type: 'integer', description: '时间范围内发送记录数' },
+              byType: {
+                type: 'object',
+                description: '按消息类型统计（0=邮件，1=短信）',
+                additionalProperties: { type: 'integer' }
+              },
+              byCode: {
+                type: 'object',
+                description: '按模板编码统计',
+                additionalProperties: { type: 'integer' }
+              },
+              templateStats: {
+                type: 'object',
+                properties: {
+                  total: { type: 'integer', description: '模板总数' },
+                  byStatus: {
+                    type: 'object',
+                    description: '按模板状态统计（0=启用，1=禁用）',
+                    additionalProperties: { type: 'integer' }
+                  },
+                  byType: {
+                    type: 'object',
+                    description: '按模板类型统计（0=邮件，1=短信）',
+                    additionalProperties: { type: 'integer' }
+                  }
+                }
+              },
+              recentTrend: {
+                type: 'array',
+                description: '时间范围内发送趋势',
+                items: {
+                  type: 'object',
+                  properties: {
+                    date: { type: 'string', description: '日期' },
+                    count: { type: 'integer', description: '发送数量' }
+                  }
+                }
+              },
+              recentTrendByType: {
+                type: 'array',
+                description: '时间范围内按类型发送趋势',
+                items: {
+                  type: 'object',
+                  properties: {
+                    date: { type: 'string', description: '日期' },
+                    type: { type: 'integer', description: '消息类型' },
+                    count: { type: 'integer', description: '发送数量' }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    async request => {
+      const { range = '7d' } = request.query;
+      return await services.statistics.getOverview({ range });
+    }
+  );
+
+  // SSE 实时统计数据推送（当天实时数据）
+  fastify.get(
+    `${options.prefix}/statistics/sse`,
+    {
+      sse: true,
+      onRequest: options.getAuthenticate('statistics'),
+      schema: {
+        description: 'SSE实时推送当天消息统计数据',
+        summary: '实时统计数据SSE',
+        querystring: {
+          type: 'object',
+          properties: {
+            interval: { type: 'integer', minimum: 1, default: 5, description: '推送间隔时间（秒），最小1秒，默认5秒' }
+          }
+        }
+      }
+    },
+    async function (request, reply) {
+      const intervalSeconds = request.query.interval;
+      reply.sse.keepAlive();
+
+      async function* eventStream() {
+        while (reply.sse.isConnected) {
+          try {
+            yield { data: JSON.stringify(await services.statistics.getRealtime()) };
+          } catch (err) {
+            yield { event: 'error', data: JSON.stringify({ message: err.message }) };
+          }
+          await new Promise(resolve => setTimeout(resolve, intervalSeconds * 1000));
+        }
+      }
+
+      await reply.sse.send(eventStream());
     }
   );
 
@@ -213,7 +336,7 @@ module.exports = fp(async (fastify, options) => {
       if (level !== undefined) where.level = level;
       if (status !== undefined) where.status = status;
       
-      return await services.template.list({ filter: where, perPage, currentPage });
+      return await services.template.list({ filter: where, perPage: Math.min(perPage, 100), currentPage });
     }
   );
 
@@ -254,7 +377,10 @@ module.exports = fp(async (fastify, options) => {
       try {
         return await services.template.detail({ id });
       } catch (error) {
-        throw fastify.httpErrors.notFound(error.message);
+        if (error.message === '模版不存在') {
+          throw fastify.httpErrors.notFound(error.message);
+        }
+        throw error;
       }
     }
   );

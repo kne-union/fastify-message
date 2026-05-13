@@ -41,7 +41,7 @@ describe('@kne/fastify-message', function () {
     await fastify.register(require('@fastify/sensible'));
     
     await fastify.register(require('@kne/fastify-sequelize'), {
-      db: { dialect: 'sqlite', storage: ':memory:' }
+      db: { dialect: 'sqlite', storage: ':memory:', logging: false }
     });
 
     // 创建测试用的 User 模型 - 使用 fastify.sequelize.instance
@@ -61,6 +61,7 @@ describe('@kne/fastify-message', function () {
       isTest: true,
       getUserModel: () => UserModel,
       templateDir: null,
+      getAuthenticate: () => [],
       ...options
     });
 
@@ -102,6 +103,9 @@ describe('@kne/fastify-message', function () {
       expect(fastify.message.services.messageTemplate).to.exist;
       expect(fastify.message.services.parseTemplate).to.exist;
       expect(fastify.message.services.sendMessage).to.exist;
+      expect(fastify.message.services.record).to.exist;
+      expect(fastify.message.services.template).to.exist;
+      expect(fastify.message.services.statistics).to.exist;
     });
 
     it('should use custom name option', async () => {
@@ -364,6 +368,219 @@ describe('@kne/fastify-message', function () {
       const templates = await models.template.findAll();
       expect(templates.length).to.equal(1);
       expect(templates[0].content).to.equal('<!-- subject -->新主题<!-- html --><div>新内容</div>');
+    });
+  });
+
+  describe('statistics.getOverview 服务测试', () => {
+    let fastify;
+
+    beforeEach(async () => {
+      fastify = await createFastify();
+    });
+
+    afterEach(async () => {
+      await fastify.close();
+    });
+
+    it('should return empty overview when no records', async () => {
+      const { services } = fastify.message;
+      const result = await services.statistics.getOverview();
+
+      expect(result.range).to.equal('7d');
+      expect(result.rangeLabel).to.equal('近7天');
+      expect(result.totalRecords).to.equal(0);
+      expect(result.byType).to.deep.equal({});
+      expect(result.byCode).to.deep.equal({});
+      expect(result.templateStats).to.exist;
+      expect(result.recentTrend).to.deep.equal([]);
+      expect(result.recentTrendByType).to.deep.equal([]);
+    });
+
+    it('should return overview with default range 7d', async () => {
+      const { models, services } = fastify.message;
+
+      await models.template.create({ code: 'test', type: 0, name: '测试', content: '', level: 0 });
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'test', type: 0, name: 'u2@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'verify', type: 1, name: '138', props: {}, content: {} });
+
+      const result = await services.statistics.getOverview();
+
+      expect(result.range).to.equal('7d');
+      expect(result.totalRecords).to.equal(3);
+      expect(result.byType['0']).to.equal(2);
+      expect(result.byType['1']).to.equal(1);
+      expect(result.byCode['test']).to.equal(2);
+      expect(result.byCode['verify']).to.equal(1);
+    });
+
+    it('should return overview with range 1m', async () => {
+      const { services } = fastify.message;
+      const result = await services.statistics.getOverview({ range: '1m' });
+
+      expect(result.range).to.equal('1m');
+      expect(result.rangeLabel).to.equal('近1个月');
+    });
+
+    it('should return overview with range 1y', async () => {
+      const { services } = fastify.message;
+      const result = await services.statistics.getOverview({ range: '1y' });
+
+      expect(result.range).to.equal('1y');
+      expect(result.rangeLabel).to.equal('近1年');
+    });
+
+    it('should fallback to 7d for invalid range', async () => {
+      const { services } = fastify.message;
+      const result = await services.statistics.getOverview({ range: 'invalid' });
+
+      expect(result.range).to.equal('7d');
+      expect(result.rangeLabel).to.equal('近7天');
+    });
+
+    it('should include templateStats', async () => {
+      const { models, services } = fastify.message;
+
+      await models.template.create({ code: 't1', type: 0, name: '邮件', content: '', status: 0 });
+      await models.template.create({ code: 't2', type: 1, name: '短信', content: '', status: 1 });
+
+      const result = await services.statistics.getOverview();
+
+      expect(result.templateStats.total).to.equal(2);
+      expect(result.templateStats.byStatus['0']).to.equal(1);
+      expect(result.templateStats.byStatus['1']).to.equal(1);
+      expect(result.templateStats.byType['0']).to.equal(1);
+      expect(result.templateStats.byType['1']).to.equal(1);
+    });
+
+    it('should include recentTrend with daily data', async () => {
+      const { models, services } = fastify.message;
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'test', type: 0, name: 'u2@e.com', props: {}, content: {} });
+
+      const result = await services.statistics.getOverview();
+
+      expect(result.recentTrend).to.be.an('array');
+      expect(result.recentTrend.length).to.be.greaterThan(0);
+      expect(result.recentTrend[0].date).to.exist;
+      expect(result.recentTrend[0].count).to.exist;
+    });
+
+    it('should include recentTrendByType with daily data by type', async () => {
+      const { models, services } = fastify.message;
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'test', type: 1, name: '138', props: {}, content: {} });
+
+      const result = await services.statistics.getOverview();
+
+      expect(result.recentTrendByType).to.be.an('array');
+      if (result.recentTrendByType.length > 0) {
+        expect(result.recentTrendByType[0].date).to.exist;
+        expect(result.recentTrendByType[0].type).to.exist;
+        expect(result.recentTrendByType[0].count).to.exist;
+      }
+    });
+  });
+
+  describe('statistics.getRealtime 服务测试', () => {
+    let fastify;
+
+    beforeEach(async () => {
+      fastify = await createFastify();
+    });
+
+    afterEach(async () => {
+      await fastify.close();
+    });
+
+    it('should return empty realtime when no records today', async () => {
+      const { services } = fastify.message;
+      const result = await services.statistics.getRealtime();
+
+      const today = new Date();
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      expect(result.date).to.equal(todayStr);
+      expect(result.totalRecords).to.equal(0);
+      expect(result.byType).to.deep.equal({});
+      expect(result.byCode).to.deep.equal({});
+      expect(result.hourlyTrend).to.deep.equal([]);
+      expect(result.hourlyTrendByType).to.deep.equal([]);
+    });
+
+    it('should return realtime data for today', async () => {
+      const { models, services } = fastify.message;
+
+      await models.record.create({ code: 'welcome', type: 0, name: 'u1@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'welcome', type: 0, name: 'u2@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'verify', type: 1, name: '138', props: {}, content: {} });
+
+      const result = await services.statistics.getRealtime();
+
+      const today = new Date();
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      expect(result.date).to.equal(todayStr);
+      expect(result.totalRecords).to.equal(3);
+      expect(result.byType['0']).to.equal(2);
+      expect(result.byType['1']).to.equal(1);
+      expect(result.byCode['welcome']).to.equal(2);
+      expect(result.byCode['verify']).to.equal(1);
+    });
+
+    it('should include hourlyTrend', async () => {
+      const { models, services } = fastify.message;
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+
+      const result = await services.statistics.getRealtime();
+
+      expect(result.hourlyTrend).to.be.an('array');
+      expect(result.hourlyTrend.length).to.be.greaterThan(0);
+      expect(result.hourlyTrend[0].hour).to.exist;
+      expect(result.hourlyTrend[0].count).to.exist;
+    });
+
+    it('should include hourlyTrendByType', async () => {
+      const { models, services } = fastify.message;
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'test', type: 1, name: '138', props: {}, content: {} });
+
+      const result = await services.statistics.getRealtime();
+
+      expect(result.hourlyTrendByType).to.be.an('array');
+      if (result.hourlyTrendByType.length > 0) {
+        expect(result.hourlyTrendByType[0].hour).to.exist;
+        expect(result.hourlyTrendByType[0].type).to.exist;
+        expect(result.hourlyTrendByType[0].count).to.exist;
+      }
+    });
+
+    it('should only count today records not old records', async () => {
+      const { models, services } = fastify.message;
+      const { Sequelize } = models.record.sequelize;
+
+      // 创建一条昨天的记录（直接通过SQL修改createdAt不太可靠，用原始查询）
+      await models.record.create({ code: 'old', type: 0, name: 'old@e.com', props: {}, content: {} });
+      // 将刚创建的记录时间改为昨天
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      await models.record.update(
+        { createdAt: yesterday },
+        { where: { code: 'old' } }
+      );
+
+      // 创建一条今天的记录
+      await models.record.create({ code: 'today', type: 0, name: 'today@e.com', props: {}, content: {} });
+
+      const result = await services.statistics.getRealtime();
+
+      // 只统计今天的记录
+      expect(result.totalRecords).to.equal(1);
+      expect(result.byCode['today']).to.equal(1);
+      expect(result.byCode['old']).to.be.undefined;
     });
   });
 
@@ -809,6 +1026,203 @@ describe('@kne/fastify-message', function () {
         });
 
         expect(response.statusCode).to.equal(400);
+      });
+    });
+
+    describe('统计数据接口', () => {
+      it('should return statistics overview with default range 7d', async () => {
+        const { models } = fastify.message;
+
+        await models.template.create({
+          code: 'test', type: 0, name: '测试', content: '', level: 0
+        });
+
+        await models.record.create({
+          code: 'test', type: 0, name: 'user1@example.com', props: {}, content: {}
+        });
+
+        await models.record.create({
+          code: 'test', type: 1, name: '13800138000', props: {}, content: {}
+        });
+
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/statistics'
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.range).to.equal('7d');
+        expect(body.rangeLabel).to.equal('近7天');
+        expect(body.totalRecords).to.equal(2);
+        expect(body.byType).to.exist;
+        expect(body.byCode).to.exist;
+        expect(body.templateStats).to.exist;
+        expect(body.templateStats.total).to.equal(1);
+        expect(body.recentTrend).to.be.an('array');
+        expect(body.recentTrendByType).to.be.an('array');
+      });
+
+      it('should return statistics with range 1m', async () => {
+        const { models } = fastify.message;
+
+        await models.record.create({
+          code: 'test', type: 0, name: 'user@example.com', props: {}, content: {}
+        });
+
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/statistics?range=1m'
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.range).to.equal('1m');
+        expect(body.rangeLabel).to.equal('近1个月');
+        expect(body.totalRecords).to.equal(1);
+      });
+
+      it('should return statistics with range 1y', async () => {
+        const { models } = fastify.message;
+
+        await models.record.create({
+          code: 'test', type: 0, name: 'user@example.com', props: {}, content: {}
+        });
+
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/statistics?range=1y'
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.range).to.equal('1y');
+        expect(body.rangeLabel).to.equal('近1年');
+        expect(body.totalRecords).to.equal(1);
+      });
+
+      it('should fallback to 7d for invalid range', async () => {
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/statistics?range=invalid'
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.range).to.equal('7d');
+        expect(body.rangeLabel).to.equal('近7天');
+      });
+
+      it('should return empty statistics when no records', async () => {
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/statistics'
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.totalRecords).to.equal(0);
+        expect(body.byType).to.deep.equal({});
+        expect(body.byCode).to.deep.equal({});
+        expect(body.recentTrend).to.deep.equal([]);
+        expect(body.recentTrendByType).to.deep.equal([]);
+      });
+
+      it('should group records by type correctly', async () => {
+        const { models } = fastify.message;
+
+        await models.record.create({ code: 'a', type: 0, name: 'u1@e.com', props: {}, content: {} });
+        await models.record.create({ code: 'a', type: 0, name: 'u2@e.com', props: {}, content: {} });
+        await models.record.create({ code: 'b', type: 1, name: '138', props: {}, content: {} });
+
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/statistics'
+        });
+
+        const body = JSON.parse(response.body);
+        expect(body.totalRecords).to.equal(3);
+        expect(body.byType['0']).to.equal(2);
+        expect(body.byType['1']).to.equal(1);
+        expect(body.byCode['a']).to.equal(2);
+        expect(body.byCode['b']).to.equal(1);
+      });
+
+      it('should return SSE stream with correct headers', async function () {
+        this.timeout(5000);
+        const address = await fastify.listen({ port: 0 });
+        await new Promise((resolve, reject) => {
+          const url = new URL(`${address}/api/message/statistics/sse`);
+          const req = require('node:http').request({
+            hostname: url.hostname,
+            port: url.port,
+            path: url.pathname,
+            method: 'GET',
+            headers: { 'Accept': 'text/event-stream' }
+          }, (res) => {
+            expect(res.statusCode).to.equal(200);
+            expect(res.headers['content-type']).to.include('text/event-stream');
+            let received = false;
+            res.on('data', (chunk) => {
+              if (!received) {
+                received = true;
+                const data = chunk.toString();
+                expect(data).to.include('data:');
+                req.destroy();
+              }
+            });
+            res.on('close', resolve);
+          });
+          req.on('error', reject);
+          req.end();
+          setTimeout(() => { req.destroy(); resolve(); }, 3000);
+        });
+      });
+
+      it('should return SSE stream with custom interval', async function () {
+        this.timeout(5000);
+        const address = await fastify.listen({ port: 0 });
+        await new Promise((resolve, reject) => {
+          const url = new URL(`${address}/api/message/statistics/sse?interval=3`);
+          const req = require('node:http').request({
+            hostname: url.hostname,
+            port: url.port,
+            path: url.pathname + url.search,
+            method: 'GET',
+            headers: { 'Accept': 'text/event-stream' }
+          }, (res) => {
+            expect(res.statusCode).to.equal(200);
+            let received = false;
+            res.on('data', (chunk) => {
+              if (!received) {
+                received = true;
+                const data = chunk.toString();
+                expect(data).to.include('data:');
+                req.destroy();
+              }
+            });
+            res.on('close', resolve);
+          });
+          req.on('error', reject);
+          req.end();
+          setTimeout(() => { req.destroy(); resolve(); }, 3000);
+        });
+      });
+
+      it('should apply statistics authenticate type', async () => {
+        const accessedTypes = [];
+        const authFastify = await createFastify({
+          getAuthenticate: (type) => {
+            accessedTypes.push(type);
+            return [];
+          }
+        });
+
+        await authFastify.inject({ method: 'GET', url: '/api/message/statistics' });
+
+        expect(accessedTypes).to.include('statistics');
+
+        await authFastify.close();
       });
     });
 

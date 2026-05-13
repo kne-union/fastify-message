@@ -5,7 +5,6 @@ const template = require('lodash/template');
 const merge = require('lodash/merge');
 const nodemailer = require('nodemailer');
 const { convert } = require('html-to-text');
-const pify = require('pify');
 
 module.exports = fp(async (fastify, options) => {
   const emailConfig = Object.assign({}, {
@@ -15,17 +14,19 @@ module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
   const includeTemplate = async dir => {
     if (!(await fs.exists(dir))) {
-      console.log('template dir not exists');
+      fastify.log.info('template dir not exists');
       return;
     }
-    console.log('------start include template------');
+    fastify.log.info('------start include template------');
     const list = await fs.readdir(dir);
     for (const file of list) {
       const filePath = path.join(dir, file);
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) continue;
       const content = await fs.readFile(filePath, 'utf8');
       const filename = file.replace(path.extname(file), '');
       const tempArray = filename.split('_');
-      const code = tempArray[0], type = tempArray[1] || 0, name = tempArray[2] || code;
+      const code = tempArray[0], type = Number(tempArray[1]) || 0, name = tempArray[2] || code;
       const codeTemplate = await models.template.findOne({
         where: {
           code, type, level: 0
@@ -36,15 +37,15 @@ module.exports = fp(async (fastify, options) => {
         codeTemplate.content = content;
         codeTemplate.name = name;
         await codeTemplate.save();
-        console.log(`update template: ${code}`);
+        fastify.log.info(`update template: ${code}`);
         continue;
       }
       await models.template.create({
         code, type, name, content, level: 0
       });
-      console.log(`create template: ${code}`);
+      fastify.log.info(`create template: ${code}`);
     }
-    console.log('------end include template------');
+    fastify.log.info('------end include template------');
   };
 
   const parseTemplate = text => {
@@ -70,7 +71,7 @@ module.exports = fp(async (fastify, options) => {
       throw new Error('template not found');
     }
 
-    const content = parseTemplate(template(codeTemplate.content)(props).split(/<!--(\s*)-->/g));
+    const content = parseTemplate(template(codeTemplate.content)(props));
 
     return {
       content, props, code, type, templateId: codeTemplate.id
@@ -103,19 +104,22 @@ module.exports = fp(async (fastify, options) => {
               }
             }, client);
             const smtp = nodemailer.createTransport(currentClient);
-            await pify(smtp.sendMail.bind(smtp))(mailOptions);
+            try {
+              await smtp.sendMail(mailOptions);
+            } finally {
+              smtp.close();
+            }
           }
         }
         return mailOptions;
       }
       if (typeof currentSender === 'function') {
-        const { content, templateId } = await messageTemplate({ code, type, level, props });
         if (!isTest) {
           return await currentSender({ code, templateId, content, props, name, type, level, options: targetOptions });
         }
-
         return { content, props, level, options: targetOptions };
       }
+      throw new Error(`未配置类型 ${type} 的消息发送器`);
     })(type);
     await models.record.create({ type, code, templateId, props, name, content: sendOptions });
   };
@@ -150,6 +154,164 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     
+    // 统计相关服务
+    statistics: {
+      getOverview: async ({ range = '7d' } = {}) => {
+        const { Sequelize } = models.record.sequelize;
+        const recordModel = models.record;
+        const templateModel = models.template;
+        const createdAtCol = recordModel.rawAttributes.createdAt.field;
+
+        // 根据range计算起始时间
+        const rangeMap = {
+          '7d': { days: 7, label: '近7天' },
+          '1m': { days: 30, label: '近1个月' },
+          '1y': { days: 365, label: '近1年' }
+        };
+        const normalizedRange = rangeMap[range] ? range : '7d';
+        const rangeConfig = rangeMap[normalizedRange];
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - rangeConfig.days);
+
+        const whereRange = { createdAt: { [Sequelize.Op.gte]: startDate } };
+        const dateFn = col => Sequelize.fn('DATE', Sequelize.col(col));
+
+        // 并行执行所有查询
+        const [totalRecords, byType, byCode, totalTemplates, templatesByStatus, templatesByType, recentTrend, recentTrendByType] = await Promise.all([
+          recordModel.count({ where: whereRange }),
+          recordModel.findAll({
+            attributes: ['type', [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']],
+            where: whereRange,
+            group: ['type'],
+            raw: true
+          }),
+          recordModel.findAll({
+            attributes: ['code', [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']],
+            where: whereRange,
+            group: ['code'],
+            raw: true
+          }),
+          templateModel.count(),
+          templateModel.findAll({
+            attributes: ['status', [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']],
+            group: ['status'],
+            raw: true
+          }),
+          templateModel.findAll({
+            attributes: ['type', [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']],
+            group: ['type'],
+            raw: true
+          }),
+          recordModel.findAll({
+            attributes: [
+              [dateFn(createdAtCol), 'date'],
+              [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+            ],
+            where: whereRange,
+            group: [dateFn(createdAtCol)],
+            order: [[dateFn(createdAtCol), 'ASC']],
+            raw: true
+          }),
+          recordModel.findAll({
+            attributes: [
+              [dateFn(createdAtCol), 'date'],
+              'type',
+              [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+            ],
+            where: whereRange,
+            group: [dateFn(createdAtCol), 'type'],
+            order: [[dateFn(createdAtCol), 'ASC']],
+            raw: true
+          })
+        ]);
+
+        return {
+          range: normalizedRange,
+          rangeLabel: rangeConfig.label,
+          totalRecords,
+          byType: byType.reduce((acc, item) => { acc[item.type] = Number(item.count); return acc; }, {}),
+          byCode: byCode.reduce((acc, item) => { acc[item.code] = Number(item.count); return acc; }, {}),
+          templateStats: {
+            total: totalTemplates,
+            byStatus: templatesByStatus.reduce((acc, item) => { acc[item.status] = Number(item.count); return acc; }, {}),
+            byType: templatesByType.reduce((acc, item) => { acc[item.type] = Number(item.count); return acc; }, {})
+          },
+          recentTrend: recentTrend.map(item => ({ date: item.date, count: Number(item.count) })),
+          recentTrendByType: recentTrendByType.map(item => ({ date: item.date, type: item.type, count: Number(item.count) }))
+        };
+      },
+
+      getRealtime: async () => {
+        const { Sequelize } = models.record.sequelize;
+        const recordModel = models.record;
+        const createdAtCol = recordModel.rawAttributes.createdAt.field;
+        const dialect = recordModel.sequelize.getDialect();
+
+        // 当天起始时间
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+
+        const whereToday = { createdAt: { [Sequelize.Op.gte]: todayStart } };
+        const hourExtract = dialect === 'sqlite'
+          ? Sequelize.fn('strftime', '%H', Sequelize.col(createdAtCol))
+          : Sequelize.fn('EXTRACT', Sequelize.literal(`HOUR FROM "${createdAtCol}"`));
+
+        // 并行执行所有查询
+        const [totalRecords, byType, byCode, hourlyTrend, hourlyTrendByType] = await Promise.all([
+          recordModel.count({ where: whereToday }),
+          recordModel.findAll({
+            attributes: ['type', [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']],
+            where: whereToday,
+            group: ['type'],
+            raw: true
+          }),
+          recordModel.findAll({
+            attributes: ['code', [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']],
+            where: whereToday,
+            group: ['code'],
+            raw: true
+          }),
+          recordModel.findAll({
+            attributes: [
+              [hourExtract, 'hour'],
+              [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+            ],
+            where: whereToday,
+            group: [hourExtract],
+            order: [[hourExtract, 'ASC']],
+            raw: true
+          }),
+          recordModel.findAll({
+            attributes: [
+              [hourExtract, 'hour'],
+              'type',
+              [Sequelize.fn('COUNT', Sequelize.col('id')), 'count']
+            ],
+            where: whereToday,
+            group: [hourExtract, 'type'],
+            order: [[hourExtract, 'ASC'], ['type', 'ASC']],
+            raw: true
+          })
+        ]);
+
+        const formatDate = date => {
+          const y = date.getFullYear();
+          const m = String(date.getMonth() + 1).padStart(2, '0');
+          const d = String(date.getDate()).padStart(2, '0');
+          return `${y}-${m}-${d}`;
+        };
+
+        return {
+          date: formatDate(todayStart),
+          totalRecords,
+          byType: byType.reduce((acc, item) => { acc[item.type] = Number(item.count); return acc; }, {}),
+          byCode: byCode.reduce((acc, item) => { acc[item.code] = Number(item.count); return acc; }, {}),
+          hourlyTrend: hourlyTrend.map(item => ({ hour: Number(item.hour), count: Number(item.count) })),
+          hourlyTrendByType: hourlyTrendByType.map(item => ({ hour: Number(item.hour), type: item.type, count: Number(item.count) }))
+        };
+      }
+    },
+
     // 消息模版相关服务
     template: {
       list: async ({ filter = {}, perPage = 20, currentPage = 1 }) => {
