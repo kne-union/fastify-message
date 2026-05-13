@@ -164,10 +164,11 @@ module.exports = fp(async (fastify, options) => {
       schema: {
         description: '获取消息统计数据概览',
         summary: '统计数据概览',
-        querystring: {
+          querystring: {
           type: 'object',
           properties: {
-            range: { type: 'string', default: '7d', description: '时间范围: 7d=近7天, 1m=近1个月, 1y=近1年' }
+            range: { type: 'string', default: '7d', description: '时间范围: 7d=近7天, 1m=近1个月, 1y=近1年' },
+            timezone: { type: 'string', description: '时区，如 Asia/Shanghai，默认服务器时区' }
           }
         },
         response: {
@@ -232,8 +233,8 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     async request => {
-      const { range = '7d' } = request.query;
-      return await services.statistics.getOverview({ range });
+      const { range = '7d', timezone } = request.query;
+      return await services.statistics.getOverview({ range, timezone });
     }
   );
 
@@ -246,22 +247,24 @@ module.exports = fp(async (fastify, options) => {
       schema: {
         description: 'SSE实时推送当天消息统计数据',
         summary: '实时统计数据SSE',
-        querystring: {
+          querystring: {
           type: 'object',
           properties: {
-            interval: { type: 'integer', minimum: 1, default: 5, description: '推送间隔时间（秒），最小1秒，默认5秒' }
+            interval: { type: 'integer', minimum: 1, default: 5, description: '推送间隔时间（秒），最小1秒，默认5秒' },
+            timezone: { type: 'string', description: '时区，如 Asia/Shanghai，默认服务器时区' }
           }
         }
       }
     },
     async function (request, reply) {
       const intervalSeconds = request.query.interval;
+      const { timezone } = request.query;
       reply.sse.keepAlive();
 
       async function* eventStream() {
         while (reply.sse.isConnected) {
           try {
-            yield { data: JSON.stringify(await services.statistics.getRealtime()) };
+            yield { data: JSON.stringify(await services.statistics.getRealtime({ timezone })) };
           } catch (err) {
             yield { event: 'error', data: JSON.stringify({ message: err.message }) };
           }

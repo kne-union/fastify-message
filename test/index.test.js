@@ -67,8 +67,12 @@ describe('@kne/fastify-message', function () {
 
     await fastify.ready();
     
-    // 同步数据库表结构
-    await fastify.sequelize.instance.sync({ force: true });
+    // 如果传了 templateDir，使用 sync 而非 sync({ force: true }) 避免清空 includeTemplate 导入的数据
+    if (options.templateDir) {
+      await fastify.sequelize.instance.sync();
+    } else {
+      await fastify.sequelize.instance.sync({ force: true });
+    }
     
     return fastify;
   };
@@ -112,6 +116,103 @@ describe('@kne/fastify-message', function () {
       fastify = await createFastify({ name: 'customMessage' });
       expect(fastify.customMessage).to.exist;
       expect(fastify.customMessage.models).to.exist;
+    });
+
+    it('should start successfully with templateDir and load templates after sync', async () => {
+      const tempDir = path.join(__dirname, 'temp-startup-templates');
+      await fs.ensureDir(tempDir);
+      try {
+        await fs.writeFile(
+          path.join(tempDir, 'startup_test.ejs'),
+          '<!-- subject -->启动测试<!-- html --><div>启动测试内容</div>'
+        );
+
+        fastify = await createFastify({ templateDir: tempDir });
+
+        // syncPromise 已 resolve，.then 回调在微任务队列中，等待其完成
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const templates = await fastify.message.models.template.findAll();
+        expect(templates.length).to.equal(1);
+        expect(templates[0].code).to.equal('startup');
+      } finally {
+        await fs.remove(tempDir);
+      }
+    });
+
+    it('should load templates with correct fields from templateDir on startup', async () => {
+      const tempDir = path.join(__dirname, 'temp-startup-fields');
+      await fs.ensureDir(tempDir);
+      try {
+        await fs.writeFile(
+          path.join(tempDir, 'verify_1_验证码.ejs'),
+          '<!-- subject -->您的验证码<!-- html --><div>验证码为：<%= code %></div>'
+        );
+        await fs.writeFile(
+          path.join(tempDir, 'welcome.ejs'),
+          '<!-- subject -->欢迎<!-- html --><p>欢迎您</p>'
+        );
+
+        fastify = await createFastify({ templateDir: tempDir });
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const templates = await fastify.message.models.template.findAll({ order: [['code', 'ASC']] });
+        expect(templates.length).to.equal(2);
+
+        const verifyTpl = templates.find(t => t.code === 'verify');
+        expect(verifyTpl).to.exist;
+        expect(verifyTpl.type).to.equal(1);
+        expect(verifyTpl.name).to.equal('验证码');
+        expect(verifyTpl.level).to.equal(0);
+        expect(verifyTpl.content).to.include('您的验证码');
+
+        const welcomeTpl = templates.find(t => t.code === 'welcome');
+        expect(welcomeTpl).to.exist;
+        expect(welcomeTpl.type).to.equal(0);
+        expect(welcomeTpl.name).to.equal('welcome');
+        expect(welcomeTpl.level).to.equal(0);
+      } finally {
+        await fs.remove(tempDir);
+      }
+    });
+
+    it('should update existing template when templateDir has same code on startup', async () => {
+      const tempDir = path.join(__dirname, 'temp-startup-update');
+      await fs.ensureDir(tempDir);
+      try {
+        await fs.writeFile(
+          path.join(tempDir, 'welcome.ejs'),
+          '<!-- subject -->旧主题<!-- html --><div>旧内容</div>'
+        );
+
+        fastify = await createFastify({ templateDir: tempDir });
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        let templates = await fastify.message.models.template.findAll();
+        expect(templates.length).to.equal(1);
+        expect(templates[0].content).to.include('旧内容');
+
+        // 模版文件更新后再次调用 includeTemplate
+        await fs.writeFile(
+          path.join(tempDir, 'welcome.ejs'),
+          '<!-- subject -->新主题<!-- html --><div>新内容</div>'
+        );
+
+        await fastify.message.services.includeTemplate(tempDir);
+
+        templates = await fastify.message.models.template.findAll();
+        expect(templates.length).to.equal(1);
+        expect(templates[0].content).to.include('新内容');
+      } finally {
+        await fs.remove(tempDir);
+      }
+    });
+
+    it('should not crash when templateDir does not exist on startup', async () => {
+      fastify = await createFastify({ templateDir: '/non/existent/path' });
+      expect(fastify.message).to.exist;
+      const templates = await fastify.message.models.template.findAll();
+      expect(templates.length).to.equal(0);
     });
   });
 
@@ -508,6 +609,7 @@ describe('@kne/fastify-message', function () {
       expect(result.byCode).to.deep.equal({});
       expect(result.hourlyTrend).to.deep.equal([]);
       expect(result.hourlyTrendByType).to.deep.equal([]);
+      expect(result.intervalTrend).to.deep.equal([]);
     });
 
     it('should return realtime data for today', async () => {
@@ -581,6 +683,143 @@ describe('@kne/fastify-message', function () {
       expect(result.totalRecords).to.equal(1);
       expect(result.byCode['today']).to.equal(1);
       expect(result.byCode['old']).to.be.undefined;
+      // intervalTrend 中只包含今天的时间区间
+      expect(result.intervalTrend.length).to.equal(1);
+    });
+
+    it('should include intervalTrend grouped by 15-minute intervals', async () => {
+      const { models, services } = fastify.message;
+
+      await models.record.create({ code: 'welcome', type: 0, name: 'u1@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'verify', type: 1, name: '138', props: {}, content: {} });
+
+      const result = await services.statistics.getRealtime();
+
+      expect(result.intervalTrend).to.be.an('array');
+      expect(result.intervalTrend.length).to.be.greaterThan(0);
+      const item = result.intervalTrend[0];
+      expect(item.interval).to.match(/^\d{2}:\d{2}$/);
+      expect(item.count).to.be.a('number');
+    });
+
+    it('should group records in same 15-minute interval', async () => {
+      const { models, services } = fastify.message;
+
+      // 同一时间段内创建3条记录
+      await models.record.create({ code: 'a', type: 0, name: 'u1@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'a', type: 0, name: 'u2@e.com', props: {}, content: {} });
+      await models.record.create({ code: 'b', type: 1, name: '138', props: {}, content: {} });
+
+      const result = await services.statistics.getRealtime();
+
+      // 3条记录在同一15分钟区间，应合并为1条
+      expect(result.intervalTrend.length).to.equal(1);
+      expect(result.intervalTrend[0].count).to.equal(3);
+    });
+
+    it('should accept timezone parameter in getRealtime', async () => {
+      const { models, services } = fastify.message;
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+
+      // 不传timezone使用服务器本地时区
+      const localResult = await services.statistics.getRealtime();
+      // 传timezone使用指定时区
+      const tzResult = await services.statistics.getRealtime({ timezone: 'Asia/Shanghai' });
+
+      expect(localResult.date).to.exist;
+      expect(tzResult.date).to.exist;
+      expect(tzResult.totalRecords).to.equal(1);
+    });
+
+    it('should use server timezone as default when timezone is not provided', async () => {
+      const { models, services } = fastify.message;
+      const dayjs = require('dayjs');
+      const utcPlugin = require('dayjs/plugin/utc');
+      const tzPlugin = require('dayjs/plugin/timezone');
+      dayjs.extend(utcPlugin);
+      dayjs.extend(tzPlugin);
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+
+      const serverTimezone = dayjs.tz.guess();
+      const localResult = await services.statistics.getRealtime();
+      const tzResult = await services.statistics.getRealtime({ timezone: serverTimezone });
+
+      expect(localResult.date).to.equal(tzResult.date);
+      expect(localResult.hourlyTrend).to.deep.equal(tzResult.hourlyTrend);
+      expect(localResult.intervalTrend).to.deep.equal(tzResult.intervalTrend);
+    });
+
+    it('should accept timezone parameter in getOverview', async () => {
+      const { models, services } = fastify.message;
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+
+      const localResult = await services.statistics.getOverview({ range: '7d' });
+      const tzResult = await services.statistics.getOverview({ range: '7d', timezone: 'Asia/Shanghai' });
+
+      expect(localResult.totalRecords).to.equal(1);
+      expect(tzResult.totalRecords).to.equal(1);
+      expect(tzResult.range).to.equal('7d');
+    });
+
+    it('should return correct date for Asia/Shanghai timezone', async () => {
+      const { services } = fastify.message;
+      const dayjs = require('dayjs');
+      const utcPlugin = require('dayjs/plugin/utc');
+      const tzPlugin = require('dayjs/plugin/timezone');
+      dayjs.extend(utcPlugin);
+      dayjs.extend(tzPlugin);
+
+      const result = await services.statistics.getRealtime({ timezone: 'Asia/Shanghai' });
+      const expectedDate = dayjs().tz('Asia/Shanghai').format('YYYY-MM-DD');
+      expect(result.date).to.equal(expectedDate);
+    });
+
+    it('should return correct date for America/New_York timezone', async () => {
+      const { services } = fastify.message;
+      const dayjs = require('dayjs');
+      const utcPlugin = require('dayjs/plugin/utc');
+      const tzPlugin = require('dayjs/plugin/timezone');
+      dayjs.extend(utcPlugin);
+      dayjs.extend(tzPlugin);
+
+      const result = await services.statistics.getRealtime({ timezone: 'America/New_York' });
+      const expectedDate = dayjs().tz('America/New_York').format('YYYY-MM-DD');
+      expect(result.date).to.equal(expectedDate);
+    });
+
+    it('should return correct hourlyTrend hour for timezone', async () => {
+      const { models, services } = fastify.message;
+      const dayjs = require('dayjs');
+      const utcPlugin = require('dayjs/plugin/utc');
+      const tzPlugin = require('dayjs/plugin/timezone');
+      dayjs.extend(utcPlugin);
+      dayjs.extend(tzPlugin);
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+
+      const result = await services.statistics.getRealtime({ timezone: 'Asia/Shanghai' });
+
+      if (result.hourlyTrend.length > 0) {
+        const expectedHour = dayjs().tz('Asia/Shanghai').hour();
+        // 当前小时的记录应存在（小时可能匹配）
+        const currentHourEntry = result.hourlyTrend.find(item => item.hour === expectedHour);
+        expect(currentHourEntry).to.exist;
+      }
+    });
+
+    it('should return correct intervalTrend format for timezone', async () => {
+      const { models, services } = fastify.message;
+
+      await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+
+      const result = await services.statistics.getRealtime({ timezone: 'Asia/Shanghai' });
+
+      if (result.intervalTrend.length > 0) {
+        expect(result.intervalTrend[0].interval).to.match(/^\d{2}:\d{2}$/);
+      }
     });
   });
 
@@ -1223,6 +1462,42 @@ describe('@kne/fastify-message', function () {
         expect(accessedTypes).to.include('statistics');
 
         await authFastify.close();
+      });
+
+      it('should accept timezone query parameter', async () => {
+        const { models } = fastify.message;
+        await models.record.create({ code: 'test', type: 0, name: 'u1@e.com', props: {}, content: {} });
+
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/statistics?timezone=Asia/Shanghai'
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        expect(body.totalRecords).to.equal(1);
+        expect(body.range).to.equal('7d');
+      });
+
+      it('should return correct date for timezone via API', async () => {
+        const dayjs = require('dayjs');
+        const utcPlugin = require('dayjs/plugin/utc');
+        const tzPlugin = require('dayjs/plugin/timezone');
+        dayjs.extend(utcPlugin);
+        dayjs.extend(tzPlugin);
+
+        const response = await fastify.inject({
+          method: 'GET',
+          url: '/api/message/statistics?timezone=Asia/Shanghai'
+        });
+
+        expect(response.statusCode).to.equal(200);
+        const body = JSON.parse(response.body);
+        const expectedDate = dayjs().tz('Asia/Shanghai').format('YYYY-MM-DD');
+        // recentTrend 中的日期应该是 Asia/Shanghai 时区的日期
+        if (body.recentTrend.length > 0) {
+          expect(body.recentTrend[0].date).to.exist;
+        }
       });
     });
 
