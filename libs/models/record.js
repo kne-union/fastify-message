@@ -31,7 +31,13 @@ module.exports = ({ DataTypes, options }) => {
       record.belongsTo(template);
     },
     options: {
-      comment: '系统消息记录'
+      comment: '系统消息记录',
+      indexes: [
+        { fields: ['created_at'] },
+        { fields: ['type'] },
+        { fields: ['code'] },
+        { fields: ['type', 'code'] }
+      ]
     }
   };
 };

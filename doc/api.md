@@ -4,6 +4,166 @@
 
 ---
 
+#### GET /statistics
+
+获取消息统计数据概览。
+
+**权限类型**：`statistics`
+
+**查询参数**：
+
+| 参数   | 类型     | 必填 | 默认值 | 描述                                |
+|------|--------|----|-----|-----------------------------------|
+| range | String | 否  | 7d  | 时间范围: 7d=近7天, 1m=近1个月, 1y=近1年 |
+
+**响应示例**：
+
+```json
+{
+  "range": "7d",
+  "rangeLabel": "近7天",
+  "totalRecords": 256,
+  "byType": {
+    "0": 200,
+    "1": 56
+  },
+  "byCode": {
+    "welcome": 100,
+    "verify": 80,
+    "notify": 76
+  },
+  "templateStats": {
+    "total": 5,
+    "byStatus": {
+      "0": 4,
+      "1": 1
+    },
+    "byType": {
+      "0": 3,
+      "1": 2
+    }
+  },
+  "recentTrend": [
+    { "date": "2026-05-07", "count": 10 },
+    { "date": "2026-05-08", "count": 15 },
+    { "date": "2026-05-09", "count": 8 }
+  ],
+  "recentTrendByType": [
+    { "date": "2026-05-07", "type": 0, "count": 8 },
+    { "date": "2026-05-07", "type": 1, "count": 2 },
+    { "date": "2026-05-08", "type": 0, "count": 12 },
+    { "date": "2026-05-08", "type": 1, "count": 3 }
+  ]
+}
+```
+
+**响应字段说明**：
+
+| 字段                     | 类型     | 描述                        |
+|------------------------|--------|---------------------------|
+| range                  | String | 当前时间范围参数                  |
+| rangeLabel             | String | 时间范围中文描述                  |
+| totalRecords           | Number | 时间范围内发送记录数                |
+| byType                 | Object | 按消息类型统计（键：0=邮件，1=短信）     |
+| byCode                 | Object | 按模板编码统计                   |
+| templateStats          | Object | 模板统计信息                    |
+| templateStats.total    | Number | 模板总数                      |
+| templateStats.byStatus | Object | 按模板状态统计（键：0=启用，1=禁用）     |
+| templateStats.byType   | Object | 按模板类型统计（键：0=邮件，1=短信）     |
+| recentTrend            | Array  | 时间范围内发送趋势                  |
+| recentTrendByType      | Array  | 时间范围内按类型发送趋势              |
+
+---
+
+#### GET /statistics/sse
+
+SSE 实时推送当天消息统计数据。
+
+**权限类型**：`statistics`
+
+**查询参数**：
+
+| 参数       | 类型     | 必填 | 默认值 | 描述                    |
+|----------|--------|----|-----|-----------------------|
+| interval | Number | 否  | 5   | 推送间隔时间（秒），最小1秒，默认5秒 |
+
+**说明**：该接口为 Server-Sent Events (SSE) 接口，仅推送当天的实时统计数据，建立连接后按指定间隔自动推送。数据按小时粒度展示发送趋势。
+
+**事件格式**：
+
+- `data` 事件：推送当天统计数据（JSON格式）
+- `error` 事件：推送错误信息
+
+**响应示例**：
+
+```json
+{
+  "date": "2026-05-13",
+  "totalRecords": 42,
+  "byType": {
+    "0": 35,
+    "1": 7
+  },
+  "byCode": {
+    "welcome": 20,
+    "verify": 12,
+    "notify": 10
+  },
+  "hourlyTrend": [
+    { "hour": 8, "count": 5 },
+    { "hour": 9, "count": 12 },
+    { "hour": 10, "count": 8 }
+  ],
+  "hourlyTrendByType": [
+    { "hour": 8, "type": 0, "count": 4 },
+    { "hour": 8, "type": 1, "count": 1 },
+    { "hour": 9, "type": 0, "count": 10 },
+    { "hour": 9, "type": 1, "count": 2 }
+  ]
+}
+```
+
+**响应字段说明**：
+
+| 字段                       | 类型     | 描述                          |
+|--------------------------|--------|-----------------------------|
+| date                     | String | 当天日期                        |
+| totalRecords             | Number | 当天发送记录数                     |
+| byType                   | Object | 按消息类型统计（键：0=邮件，1=短信）       |
+| byCode                   | Object | 按模板编码统计                     |
+| hourlyTrend              | Array  | 按小时发送趋势                     |
+| hourlyTrend[].hour       | Number | 小时（0-23）                    |
+| hourlyTrend[].count      | Number | 发送数量                        |
+| hourlyTrendByType        | Array  | 按小时按类型发送趋势                  |
+| hourlyTrendByType[].hour | Number | 小时（0-23）                    |
+| hourlyTrendByType[].type | Number | 消息类型                        |
+| hourlyTrendByType[].count | Number | 发送数量                        |
+
+**使用示例**：
+
+```javascript
+// 默认5秒推送一次
+const eventSource = new EventSource('/api/v1/message/statistics/sse');
+
+// 每10秒推送一次
+const eventSource = new EventSource('/api/v1/message/statistics/sse?interval=10');
+
+// 注意：浏览器原生 EventSource 不支持自定义 headers，
+// 如需认证可通过 URL 参数传递 token，或使用第三方库如 eventsource-parser
+
+eventSource.onmessage = (event) => {
+  const statistics = JSON.parse(event.data);
+  console.log('当天实时统计:', statistics);
+};
+
+eventSource.addEventListener('error', (event) => {
+  const error = JSON.parse(event.data);
+  console.error('统计错误:', error);
+});
+```
+
+---
+
 #### GET /records
 
 获取消息发送记录列表。
@@ -12,13 +172,13 @@
 
 **查询参数**：
 
-| 参数             | 类型     | 必填 | 默认值 | 描述                   |
-|----------------|--------|----|-----|----------------------|
-| currentPage    | Number | 否  | 1   | 页码                   |
-| perPage        | Number | 否  | 20  | 每页数量                 |
-| filter[type]   | Number | 否  | -   | 发送类型：0=邮件，1=短信      |
-| filter[code]   | String | 否  | -   | 模板编码（精确匹配）           |
-| filter[name]   | String | 否  | -   | 发送对象/邮箱/手机号（精确匹配）   |
+| 参数           | 类型     | 必填 | 默认值 | 描述                 |
+|--------------|--------|----|-----|----------------------|
+| currentPage  | Number | 否  | 1   | 页码                   |
+| perPage      | Number | 否  | 20  | 每页数量                 |
+| filter[type] | Number | 否  | -   | 发送类型：0=邮件，1=短信      |
+| filter[code] | String | 否  | -   | 模板编码（精确匹配）           |
+| filter[name] | String | 否  | -   | 发送对象/邮箱/手机号（精确匹配）   |
 
 **响应示例**：
 
@@ -133,11 +293,11 @@
 
 **请求体**：
 
-| 参数        | 类型     | 必填 | 描述              |
-|-----------|--------|----|-----------------|
-| templateId | String | 是  | 模版ID            |
+| 参数        | 类型     | 必填 | 描述            |
+|-----------|--------|----|---------------|
+| templateId | String | 是  | 模版ID          |
 | name      | String | 是  | 发送对象（邮箱/手机号）   |
-| props     | Object | 否  | 模版变量            |
+| props     | Object | 否  | 模版变量          |
 
 **请求示例**：
 
@@ -279,6 +439,76 @@ await fastify.message.services.sendMessage({
     ]
   }
 });
+```
+
+#### statistics.getOverview
+
+获取消息统计数据概览。
+
+| 参数   | 类型     | 必填 | 默认值 | 描述                                |
+|------|--------|----|-----|-----------------------------------|
+| range | String | 否  | 7d  | 时间范围: 7d=近7天, 1m=近1个月, 1y=近1年 |
+
+| 返回值字段                    | 类型     | 描述                        |
+|---------------------------|--------|---------------------------|
+| range                     | String | 当前时间范围参数                  |
+| rangeLabel                | String | 时间范围中文描述                  |
+| totalRecords              | Number | 时间范围内发送记录数                |
+| byType                    | Object | 按消息类型统计（键：0=邮件，1=短信）     |
+| byCode                    | Object | 按模板编码统计                   |
+| templateStats             | Object | 模板统计信息                    |
+| templateStats.total       | Number | 模板总数                      |
+| templateStats.byStatus    | Object | 按模板状态统计（键：0=启用，1=禁用）     |
+| templateStats.byType      | Object | 按模板类型统计（键：0=邮件，1=短信）     |
+| recentTrend               | Array  | 时间范围内发送趋势                  |
+| recentTrend[].date        | String | 日期                        |
+| recentTrend[].count       | Number | 发送数量                      |
+| recentTrendByType         | Array  | 时间范围内按类型发送趋势              |
+| recentTrendByType[].date  | String | 日期                        |
+| recentTrendByType[].type  | Number | 消息类型                      |
+| recentTrendByType[].count | Number | 发送数量                      |
+
+示例：
+
+```javascript
+// 近7天统计（默认）
+const stats = await fastify.message.services.statistics.getOverview();
+
+// 近1个月统计
+const stats = await fastify.message.services.statistics.getOverview({ range: '1m' });
+
+// 近1年统计
+const stats = await fastify.message.services.statistics.getOverview({ range: '1y' });
+
+console.log('时间范围:', stats.rangeLabel);
+console.log('发送数:', stats.totalRecords);
+```
+
+#### statistics.getRealtime
+
+获取当天实时统计数据，按小时粒度展示发送趋势。
+
+| 返回值字段                         | 类型     | 描述                          |
+|--------------------------------|--------|-----------------------------|
+| date                           | String | 当天日期                        |
+| totalRecords                   | Number | 当天发送记录数                     |
+| byType                         | Object | 按消息类型统计（键：0=邮件，1=短信）       |
+| byCode                         | Object | 按模板编码统计                     |
+| hourlyTrend                    | Array  | 按小时发送趋势                     |
+| hourlyTrend[].hour             | Number | 小时（0-23）                    |
+| hourlyTrend[].count            | Number | 发送数量                        |
+| hourlyTrendByType              | Array  | 按小时按类型发送趋势                  |
+| hourlyTrendByType[].hour       | Number | 小时（0-23）                    |
+| hourlyTrendByType[].type       | Number | 消息类型                        |
+| hourlyTrendByType[].count      | Number | 发送数量                        |
+
+示例：
+
+```javascript
+const realtime = await fastify.message.services.statistics.getRealtime();
+console.log('当天日期:', realtime.date);
+console.log('当天发送数:', realtime.totalRecords);
+console.log('按小时趋势:', realtime.hourlyTrend);
 ```
 
 #### record.list

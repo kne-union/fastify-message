@@ -37,7 +37,10 @@ module.exports = ({ DataTypes, options }) => {
       });
     },
     options: {
-      comment: '消息模版'
+      comment: '消息模版',
+      indexes: [
+        { fields: ['code', 'type', 'level'] }
+      ]
     }
   };
 };
