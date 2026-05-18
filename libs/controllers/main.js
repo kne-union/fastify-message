@@ -257,9 +257,8 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     async function (request, reply) {
-      const intervalSeconds = request.query.interval;
+      const intervalSeconds = request.query.interval ?? 5;
       const { timezone } = request.query;
-      reply.sse.keepAlive();
 
       async function* eventStream() {
         while (reply.sse.isConnected) {
