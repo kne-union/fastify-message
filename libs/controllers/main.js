@@ -258,12 +258,18 @@ module.exports = fp(async (fastify, options) => {
     },
     async function (request, reply) {
       const intervalSeconds = request.query.interval ?? 5;
-      const { timezone } = request.query;
+      const { timezone, type, runnerType } = request.query;
+      const startTime = Date.now();
+      const maxDurationMs = 30 * 60 * 1000;
 
       async function* eventStream() {
         while (reply.sse.isConnected) {
+          if (Date.now() - startTime >= maxDurationMs) {
+            yield { event: 'timeout', data: JSON.stringify({ message: '连接已超过30分钟，自动断开' }) };
+            return;
+          }
           try {
-            yield { data: JSON.stringify(await services.statistics.getRealtime({ timezone })) };
+            yield { data: JSON.stringify(await services.statistics.getRealtime({ timezone, type, runnerType })) };
           } catch (err) {
             yield { event: 'error', data: JSON.stringify({ message: err.message }) };
           }

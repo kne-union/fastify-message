@@ -1448,6 +1448,40 @@ describe('@kne/fastify-message', function () {
         });
       });
 
+      it('should stop SSE push after client disconnects', async function () {
+        this.timeout(8000);
+        const address = await fastify.listen({ port: 0 });
+        let chunksAfterDestroy = 0;
+        await new Promise((resolve, reject) => {
+          const url = new URL(`${address}/api/message/statistics/sse?interval=1`);
+          const req = require('node:http').request({
+            hostname: url.hostname,
+            port: url.port,
+            path: url.pathname + url.search,
+            method: 'GET',
+            headers: { 'Accept': 'text/event-stream' }
+          }, res => {
+            expect(res.statusCode).to.equal(200);
+            let destroyed = false;
+            res.on('data', () => {
+              if (destroyed) {
+                chunksAfterDestroy++;
+              } else {
+                destroyed = true;
+                req.destroy();
+                setTimeout(resolve, 2500);
+              }
+            });
+          });
+          req.on('error', err => {
+            if (err.code === 'ECONNRESET') resolve();
+            else reject(err);
+          });
+          req.end();
+        });
+        expect(chunksAfterDestroy).to.equal(0);
+      });
+
       it('should apply statistics authenticate type', async () => {
         const accessedTypes = [];
         const authFastify = await createFastify({
