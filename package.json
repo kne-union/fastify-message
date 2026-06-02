@@ -1,6 +1,6 @@
 {
   "name": "@kne/fastify-message",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "管理消息发送，支持sms消息，email消息等.",
   "main": "index.js",
   "scripts": {
@@ -60,7 +60,7 @@
     "sqlite3": "^6.0.1"
   },
   "dependencies": {
-    "@kne/fastify-statistics": "^0.1.0-alpha.10",
+    "@kne/fastify-statistics": "^0.1.0",
     "dayjs": "^1.11.20",
     "fs-extra": "^11.3.0",
     "html-to-text": "^9.0.5",
