@@ -10,16 +10,18 @@ module.exports = fp(async function(fastify, options) {
       return fastify.account.models.user;
     }, senders: {}, getAuthenticate: (type) => {
       if (!fastify.account) {
-        throw new Error('fastify-account plugin must be registered before fastify-message,or set options.getAuthenticate');
+        return [() => {
+          throw new Error('fastify-account plugin must be registered before fastify-message,or set options.getAuthenticate');
+        }];
       }
       const { authenticate } = fastify.account;
       return [authenticate.user, authenticate.admin];
     }
   }, options);
 
-  if (!fastify.sse) {
-    fastify.register(require('@fastify/sse'));
-  }
+  fastify.register(require('@kne/fastify-statistics'), {
+    dbTableNamePrefix: options.dbTableNamePrefix, name: `${options.name}Statistics`
+  });
 
   fastify.register(require('@kne/fastify-namespace'), {
     name: options.name,
