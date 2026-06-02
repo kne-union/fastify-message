@@ -20,7 +20,10 @@ module.exports = fp(async function(fastify, options) {
   }, options);
 
   fastify.register(require('@kne/fastify-statistics'), {
-    dbTableNamePrefix: options.dbTableNamePrefix, name: `${options.name}Statistics`
+    dbTableNamePrefix: options.dbTableNamePrefix,
+    modelPrefix: `${options.name}Statistics`,
+    prefix: options.prefix,
+    name: `${options.name}Statistics`
   });
 
   fastify.register(require('@kne/fastify-namespace'), {

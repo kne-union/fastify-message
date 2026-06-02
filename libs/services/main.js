@@ -14,20 +14,15 @@ module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
 
   // 采集消息统计数据
-  const collectMessageStatistics = async ({ code, type, success = true }) => {
+  const collectMessageStatistics = async ({ code, type, total = 0, success = 0, failed = 0 }) => {
     try {
       const statisticsServices = fastify[`${options.name}Statistics`]?.services;
       if (!statisticsServices) return;
 
-      const data = { total: 1, success: success ? 1 : 0, failed: success ? 0 : 1 };
+      const data = Object.assign({}, { total }, success > 0 ? { success } : {}, failed > 0 ? { failed } : {});
       const unit = { total: 'count', success: 'count', failed: 'count' };
       const time = new Date();
 
-      // 1-segment channel: code
-      await statisticsServices.collect({
-        channel: code, data, unit, time
-      });
-      // 2-segment channel: code:type
       await statisticsServices.collect({
         channel: `${code}:${type}`, data, unit, time
       });
@@ -104,71 +99,71 @@ module.exports = fp(async (fastify, options) => {
   const sendMessage = async ({ type = 0, name, props, code, level = 0, client, options: targetOptions }) => {
     targetOptions = Object.assign({}, targetOptions);
     const { content, templateId } = await messageTemplate({ code, type, level, props });
-    const sendOptions = await (async () => {
-      const currentSender = options.senders?.[type];
-      if (type === 0) {
-        const mailOptions = {
-          ...targetOptions,
-          from: `"${targetOptions.title || emailConfig.user}" <${emailConfig.user}>`,
-          to: name,
-          subject: content.subject || options.subject || emailConfig.defaultSubject || 'Message reminder',
-          text: content.text || convert(content.html),
-          html: content.html,
-          attachments: options.attachments || []
-        };
+    await collectMessageStatistics({ code, type, total: 1 });
+    try {
+      const sendOptions = await (async () => {
+        const currentSender = options.senders?.[type];
+        if (type === 0) {
+          const mailOptions = {
+            ...targetOptions,
+            from: `"${targetOptions.title || emailConfig.user}" <${emailConfig.user}>`,
+            to: name,
+            subject: content.subject || options.subject || emailConfig.defaultSubject || 'Message reminder',
+            text: content.text || convert(content.html),
+            html: content.html,
+            attachments: options.attachments || []
+          };
 
-        if (!isTest) {
-          if (typeof currentSender === 'function') {
-            await currentSender(mailOptions);
-          } else {
-            const currentClient = merge({}, {
-              host: emailConfig.host, port: emailConfig.port, secure: emailConfig.secure, auth: {
-                user: emailConfig.user, pass: emailConfig.pass
+          if (!isTest) {
+            if (typeof currentSender === 'function') {
+              await currentSender(mailOptions);
+            } else {
+              const currentClient = merge({}, {
+                host: emailConfig.host, port: emailConfig.port, secure: emailConfig.secure, auth: {
+                  user: emailConfig.user, pass: emailConfig.pass
+                }
+              }, client);
+              const smtp = nodemailer.createTransport(currentClient);
+              try {
+                await smtp.sendMail(mailOptions);
+              } finally {
+                smtp.close();
               }
-            }, client);
-            const smtp = nodemailer.createTransport(currentClient);
-            try {
-              await smtp.sendMail(mailOptions);
-            } finally {
-              smtp.close();
             }
           }
+          return mailOptions;
         }
-        return mailOptions;
-      }
-      if (typeof currentSender === 'function') {
-        if (!isTest) {
-          return await currentSender({ code, templateId, content, props, name, type, level, options: targetOptions });
+        if (typeof currentSender === 'function') {
+          if (!isTest) {
+            return await currentSender({ code, templateId, content, props, name, type, level, options: targetOptions });
+          }
+          return { content, props, level, options: targetOptions };
         }
-        return { content, props, level, options: targetOptions };
-      }
-      throw new Error(`未配置类型 ${type} 的消息发送器`);
-    })(type);
-    await models.record.create({ type, code, templateId, props, name, content: sendOptions });
-    await collectMessageStatistics({ code, type, success: true });
+        throw new Error(`未配置类型 ${type} 的消息发送器`);
+      })(type);
+      await models.record.create({ type, code, templateId, props, name, content: sendOptions });
+      await collectMessageStatistics({ code, type, success: 1 });
+    } catch (error) {
+      await collectMessageStatistics({ code, type, failed: 1 });
+      throw error;
+    }
   };
 
   Object.assign(fastify[options.name].services, {
     includeTemplate, messageTemplate, parseTemplate, sendMessage,
-    
+
     // 发送记录相关服务
     record: {
       list: async ({ filter = {}, perPage = 20, currentPage = 1 }) => {
         const { count, rows } = await models.record.findAndCountAll({
-          where: filter,
-          limit: perPage,
-          offset: (currentPage - 1) * perPage,
-          order: [['createdAt', 'DESC']]
+          where: filter, limit: perPage, offset: (currentPage - 1) * perPage, order: [['createdAt', 'DESC']]
         });
-        
+
         return {
-          pageData: rows,
-          totalCount: count,
-          perPage,
-          currentPage
+          pageData: rows, totalCount: count, perPage, currentPage
         };
       },
-      
+
       detail: async ({ id }) => {
         const record = await models.record.findByPk(id);
         if (!record) {
@@ -182,20 +177,14 @@ module.exports = fp(async (fastify, options) => {
     template: {
       list: async ({ filter = {}, perPage = 20, currentPage = 1 }) => {
         const { count, rows } = await models.template.findAndCountAll({
-          where: filter,
-          limit: perPage,
-          offset: (currentPage - 1) * perPage,
-          order: [['createdAt', 'DESC']]
+          where: filter, limit: perPage, offset: (currentPage - 1) * perPage, order: [['createdAt', 'DESC']]
         });
-        
+
         return {
-          pageData: rows,
-          totalCount: count,
-          perPage,
-          currentPage
+          pageData: rows, totalCount: count, perPage, currentPage
         };
       },
-      
+
       detail: async ({ id }) => {
         const template = await models.template.findByPk(id);
         if (!template) {
@@ -213,11 +202,7 @@ module.exports = fp(async (fastify, options) => {
           throw new Error('模版已禁用，无法发送消息');
         }
         await sendMessage({
-          type: tpl.type,
-          name,
-          props,
-          code: tpl.code,
-          level: tpl.level
+          type: tpl.type, name, props, code: tpl.code, level: tpl.level
         });
         return { success: true };
       }

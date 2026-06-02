@@ -346,6 +346,82 @@ describe('@kne/fastify-message 模板与消息服务', function () {
       const records = await models.record.findAll({ where: { code: 'stat_error' } });
       expect(records.length).to.equal(1);
     });
+
+    it('should collect total before send and success only after successful send', async () => {
+      const { models, services } = fastify.message;
+      const collects = [];
+      fastify.messageStatistics.services.collect = async payload => {
+        collects.push(payload);
+      };
+      await models.template.create({
+        code: 'stat_success',
+        type: 0,
+        name: '成功统计',
+        content: '<!-- subject -->成功<!-- html -->内容',
+        level: 0
+      });
+
+      await services.sendMessage({
+        code: 'stat_success',
+        type: 0,
+        name: 'user@example.com',
+        props: {}
+      });
+
+      expect(collects.map(item => item.channel)).to.deep.equal(['stat_success:0', 'stat_success:0']);
+      expect(collects.map(item => item.data)).to.deep.equal([
+        { total: 1 },
+        { total: 0, success: 1 }
+      ]);
+    });
+
+    it('should collect failed without success when sender throws', async () => {
+      const collects = [];
+      const fastifyWithFailingSender = await createFastify({
+        isTest: false,
+        senders: {
+          0: async () => {
+            throw new Error('send failed');
+          }
+        }
+      });
+
+      try {
+        const { models, services } = fastifyWithFailingSender.message;
+        fastifyWithFailingSender.messageStatistics.services.collect = async payload => {
+          collects.push(payload);
+        };
+        await models.template.create({
+          code: 'stat_failed',
+          type: 0,
+          name: '失败统计',
+          content: '<!-- subject -->失败<!-- html -->内容',
+          level: 0
+        });
+
+        try {
+          await services.sendMessage({
+            code: 'stat_failed',
+            type: 0,
+            name: 'user@example.com',
+            props: {}
+          });
+          throw new Error('Should have thrown');
+        } catch (error) {
+          expect(error.message).to.equal('send failed');
+        }
+
+        const records = await models.record.findAll({ where: { code: 'stat_failed' } });
+        expect(records.length).to.equal(0);
+        expect(collects.map(item => item.channel)).to.deep.equal(['stat_failed:0', 'stat_failed:0']);
+        expect(collects.map(item => item.data)).to.deep.equal([
+          { total: 1 },
+          { total: 0, failed: 1 }
+        ]);
+      } finally {
+        await fastifyWithFailingSender.close();
+      }
+    });
   });
 
   describe('includeTemplate 服务测试', () => {

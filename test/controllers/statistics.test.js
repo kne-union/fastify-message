@@ -241,6 +241,70 @@ describe('@kne/fastify-message 统计数据接口', function () {
     expect(chunksAfterDestroy).to.equal(0);
   });
 
+  it('should push updated statistics after a message is sent while SSE is connected', async function () {
+    this.timeout(8000);
+    const { models, services } = fastify.message;
+    await models.template.create({
+      code: 'sse_update',
+      type: 0,
+      name: 'SSE更新',
+      content: '<!-- subject -->SSE<!-- html -->内容',
+      level: 0
+    });
+
+    const address = await fastify.listen({ port: 0 });
+    await new Promise((resolve, reject) => {
+      const url = new URL(`${address}/api/message/statistics/sse?interval=1`);
+      const req = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname + url.search,
+        method: 'GET',
+        headers: { Accept: 'text/event-stream' }
+      }, res => {
+        let sent = false;
+        res.on('data', async chunk => {
+          const match = chunk.toString().match(/data:\s*(.+)/);
+          if (!match) return;
+          const payload = JSON.parse(match[1]);
+          if (!sent) {
+            sent = true;
+            try {
+              expect(payload.totalRecords).to.equal(0);
+              await services.sendMessage({
+                code: 'sse_update',
+                type: 0,
+                name: 'user@example.com',
+                props: {}
+              });
+            } catch (error) {
+              req.destroy();
+              reject(error);
+            }
+            return;
+          }
+          try {
+            expect(payload.totalRecords).to.equal(1);
+            expect(payload.byCode.sse_update).to.equal(1);
+            req.destroy();
+            resolve();
+          } catch (error) {
+            req.destroy();
+            reject(error);
+          }
+        });
+      });
+      req.on('error', err => {
+        if (err.code !== 'ECONNRESET') reject(err);
+      });
+      req.end();
+      setTimeout(() => {
+        req.destroy();
+        reject(new Error('Timed out waiting for updated SSE statistics'));
+      }, 5000);
+    });
+  });
+
   it('should apply statistics authenticate type', async () => {
     const accessedTypes = [];
     const authFastify = await createFastify({
