@@ -19,7 +19,7 @@ module.exports = fp(async (fastify, options) => {
       const statisticsServices = fastify[`${options.name}Statistics`]?.services;
       if (!statisticsServices) return;
 
-      const data = Object.assign({}, { total }, success > 0 ? { success } : {}, failed > 0 ? { failed } : {});
+      const data = Object.assign({}, total > 0 ? { total } : {}, success > 0 ? { success } : {}, failed > 0 ? { failed } : {});
       const unit = { total: 'count', success: 'count', failed: 'count' };
       const time = new Date();
 

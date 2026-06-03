@@ -401,12 +401,7 @@ describe('@kne/fastify-message 统计服务', function () {
     });
 
     it('should return empty payload when SSE fetchData throws', async () => {
-      let payload;
-      fastify.messageStatistics.services.sseStream.send = async (reply, options) => {
-        payload = await options.fetchData({ timezone: 'Invalid/Timezone' });
-      };
-
-      await fastify.message.services.sseStatistics({ timezone: 'Invalid/Timezone' }, {});
+      const payload = await getRealtimeStatistics(fastify, { timezone: 'Invalid/Timezone' });
 
       expect(payload).to.deep.equal({});
     });

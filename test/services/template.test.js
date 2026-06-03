@@ -371,7 +371,7 @@ describe('@kne/fastify-message 模板与消息服务', function () {
       expect(collects.map(item => item.channel)).to.deep.equal(['stat_success:0', 'stat_success:0']);
       expect(collects.map(item => item.data)).to.deep.equal([
         { total: 1 },
-        { total: 0, success: 1 }
+        { success: 1 }
       ]);
     });
 
@@ -416,7 +416,7 @@ describe('@kne/fastify-message 模板与消息服务', function () {
         expect(collects.map(item => item.channel)).to.deep.equal(['stat_failed:0', 'stat_failed:0']);
         expect(collects.map(item => item.data)).to.deep.equal([
           { total: 1 },
-          { total: 0, failed: 1 }
+          { failed: 1 }
         ]);
       } finally {
         await fastifyWithFailingSender.close();
