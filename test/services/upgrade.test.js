@@ -69,7 +69,7 @@ describe('@kne/fastify-message 1.x 升级', function () {
     expect((await fastify.message.services.upgradeSchema()).statusIndex).to.equal('exists');
   });
 
-  it('upgradeSchema 补齐新字段并把 code + type + level 索引改为唯一，已删除模版释放编码', async () => {
+  it('upgradeSchema 补齐新字段并把 code + type + level + tenantId 索引改为唯一，已删除模版释放编码', async () => {
     const queryInterface = await createLegacyTables(fastify);
     await insertTemplate(queryInterface, { code: 'a', type: 0, level: 1, content: 'old', deleted_at: new Date() });
     await insertTemplate(queryInterface, { code: 'a', type: 0, level: 1, content: 'new' });
@@ -77,13 +77,16 @@ describe('@kne/fastify-message 1.x 升级', function () {
 
     const { services, models } = fastify.message;
     const result = await services.upgradeSchema();
-    expect(result.template).to.include.members(['subject', 'description', 'variables', 'extra']);
-    expect(result.record).to.include.members(['options', 'status', 'error', 'retry_count']);
+    expect(result.template).to.include.members(['subject', 'description', 'variables', 'extra', 'tenant_id']);
+    expect(result.record).to.include.members(['options', 'status', 'error', 'retry_count', 'tenant_id']);
     expect(result.uniqueIndex).to.equal('created');
 
     const indexes = await queryInterface.showIndex(TEMPLATE_TABLE);
-    const unique = indexes.find(index => index.unique && index.fields.map(item => item.attribute).join() === 'code,type,level');
+    const unique = indexes.find(index => index.unique && index.fields.map(item => item.attribute).join() === 'code,type,level,tenant_id');
     expect(unique).to.exist;
+    expect(indexes.some(index => index.fields.map(item => item.attribute).join() === 'code,type,level')).to.equal(false);
+    const legacy = await models.template.findOne({ where: { content: 'new' } });
+    expect(legacy.tenantId).to.equal('');
 
     const deleted = await models.template.findOne({ paranoid: false, where: { content: 'old' } });
     expect(deleted.code).to.match(/^a#deleted#\d+$/);
@@ -92,6 +95,21 @@ describe('@kne/fastify-message 1.x 升级', function () {
     expect(record.retryCount).to.equal(0);
 
     expect((await services.upgradeSchema()).uniqueIndex).to.equal('exists');
+  });
+
+  it('2.0.0 的 code + type + level 唯一索引升级为含 tenantId 的唯一索引', async () => {
+    const queryInterface = fastify.sequelize.instance.getQueryInterface();
+    const indexes = await queryInterface.showIndex(TEMPLATE_TABLE);
+    for (const index of indexes.filter(item => item.unique && item.fields.length > 1)) {
+      await queryInterface.removeIndex(TEMPLATE_TABLE, index.name);
+    }
+    await queryInterface.addIndex(TEMPLATE_TABLE, ['code', 'type', 'level'], { unique: true, name: `${TEMPLATE_TABLE}_code_type_level_unique` });
+
+    expect((await fastify.message.services.upgradeSchema()).uniqueIndex).to.equal('created');
+    const { models } = fastify.message;
+    await models.template.create({ code: 'same', type: 0, level: 1 });
+    await models.template.create({ code: 'same', type: 0, level: 1, tenantId: 't1' });
+    expect(await models.template.count({ where: { code: 'same' } })).to.equal(2);
   });
 
   it('存在重复编码时保留原索引并跳过唯一索引', async () => {

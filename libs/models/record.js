@@ -39,6 +39,10 @@ module.exports = ({ DataTypes, options }) => {
         type: DataTypes.INTEGER,
         defaultValue: 0,
         comment: '重试次数'
+      },
+      tenantId: {
+        type: DataTypes.STRING,
+        comment: '所属租户，重发时据此取租户模版与 SMTP 配置'
       }
     },
     associate: ({ record, template }) => {

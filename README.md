@@ -53,6 +53,8 @@ fastify.register(require('@kne/fastify-message'), {
     defaultSubject: '系统通知' // 默认邮件主题
   },
   retry: { times: 2, delay: 1000 }, // 发送失败重试次数与间隔（毫秒），默认不重试
+  // 可选：按租户返回 SMTP 配置 { host, port, secure, user, pass, fromName, fromAddress }，返回空时使用 emailConfig
+  getEmailConfig: async ({ tenantId }) => fastify.tenant.services.mail.resolveEmailConfig({ tenantId }),
   autoUpgrade: true, // 启动时自动补齐表字段与索引、迁移 1.x 模板，默认开启；关闭后需自行调用 services.upgradeSchema()
   isTest: false // 测试模式下不会真实发送邮件
 });
@@ -101,6 +103,16 @@ fastify.register(require('@kne/fastify-message'), {
 
 `sendMessage` 未传 `level` 时，先使用启用中的同编码业务模板（level 1），没有再使用系统模板（level 0）。因此可以在后台把系统模板复制为业务模板（复制后保留编码、默认停用），修改后启用即可替换线上内容；停用业务模板后自动回退到系统模板。停用的模板不能发送。
 
+#### 租户模板与租户 SMTP
+
+模板带 `tenantId` 字段（空字符串为全局模板），唯一索引为 `code + type + level + tenantId`。
+
+- `sendMessage` 传 `tenantId` 时，先在该租户启用的模板中按上面的规则选择，没有再回退到全局模板；停用租户模板即恢复全局内容
+- 邮件发送时调用 `getEmailConfig({ tenantId })`，返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
+- 发送记录保存 `tenantId`，重发与启动补发同样使用租户模板和 SMTP
+- `template.copy({ id, tenantId })` 把全局模板复制为租户模板；模板列表接口不传 `filter[tenantId]` 时只返回全局模板
+- `verifyEmailConfig({ config, to })` 校验 SMTP 能否登录，传 `to` 时再发一封测试邮件
+
 模板目录中删除的文件，对应的系统模板会在下次启动时被停用（不删除，保留发送记录关联）；文件恢复后需在后台手动启用。
 
 #### 使用示例
@@ -136,7 +148,7 @@ await fastify.message.services.includeTemplate('./messageTemplate');
 
 1. 模板文件中的 `<%= name %>` 改为 `{{ name }}`，需要输出原始 HTML 的变量改为 `{{ name | raw }}`；`<% if (a) { %>…<% } %>` 改为 `{% if a %}…{% endif %}`
 2. 模板文件扩展名由 `.ejs` 改为 `.liquid`（`.ejs` 文件不再导入）
-3. 数据库无需手工执行 SQL：启动时（`autoUpgrade` 默认开启）自动为模板表、记录表补齐新字段，把 `code + type + level` 索引改为唯一索引并创建记录 `status` 索引，PostgreSQL / MySQL / SQLite 通用。存在重复编码时跳过唯一索引并输出告警，处理重复数据后重启即可；也可以手动调用 `services.upgradeSchema()`
+3. 数据库无需手工执行 SQL：启动时（`autoUpgrade` 默认开启）自动为模板表、记录表补齐新字段，把 `code + type + level + tenantId` 索引改为唯一索引并创建记录 `status` 索引，PostgreSQL / MySQL / SQLite 通用。存在重复编码时跳过唯一索引并输出告警，处理重复数据后重启即可；也可以手动调用 `services.upgradeSchema()`
 4. 数据库中已有模板自动迁移（`services.migrateTemplates()`）：1.x 的合并内容拆成 `subject` / `content` / `extra`，`<%= x %>`、`<%- x %>` 改为 `{{ x }}`（2.0 默认转义输出）；含 `<% if %>` 等逻辑语法的模板会跳过并在日志中列出，需在后台人工改写
 5. 短信发送器收到的 `content` 为 `{ text, ...extra }`，邮件为 `{ subject, html, text, ...extra }`
 6. `sendMessage` 未传 `level` 时会优先使用同编码的启用业务模板；只想用系统模板时显式传 `level: 0`
@@ -424,6 +436,7 @@ eventSource.addEventListener('error', (event) => {
 | filter[code]    | String | 否  | -   | 模版编码（精确匹配）       |
 | filter[level]   | Number | 否  | -   | 模版级别：0=系统，1=业务  |
 | filter[status]  | Number | 否  | -   | 状态：0=启用，1=禁用    |
+| filter[tenantId] | String | 否 | -   | 所属租户，不传时只返回全局模版 |
 | filter[keyword] | String | 否  | -   | 按模版名称、编码模糊搜索（不区分大小写，`%`、`_` 按字面匹配） |
 
 **响应示例**：
@@ -655,6 +668,7 @@ await fastify.message.services.includeTemplate('./templates');
 | code  | String | 是  | -   | 模板编码       |
 | type  | Number | 否  | 0   | 模板类型（0:邮件） |
 | level | Number | 否  | -   | 模板级别，不传时业务模板优先 |
+| tenantId | String | 否 | -  | 租户ID，传入时优先使用该租户启用的模板，没有再回退全局模板 |
 | props | Object | 是  | -   | 模板变量       |
 
 | 返回值字段           | 类型     | 描述     |
@@ -724,6 +738,7 @@ const message = await fastify.message.services.messageTemplate({
 | props   | Object | 否  | {}  | 模板变量          |
 | code    | String | 是  | -   | 模板编码          |
 | level   | Number | 否  | -   | 模板级别，不传时业务模板优先 |
+| tenantId | String | 否 | -   | 租户ID：优先使用租户模板；邮件通过插件配置 `getEmailConfig` 取租户 SMTP，写入记录供重发使用 |
 | client  | Object | 否  | -   | 客户端配置（覆盖默认配置） |
 | options | Object | 否  | -   | 发送选项          |
 | userId  | String | 否  | -   | 发送人，写入记录      |
@@ -761,6 +776,19 @@ await fastify.message.services.sendMessage({
   }
 });
 ```
+
+##### verifyEmailConfig
+
+校验 SMTP 配置能否连接并登录，传 `to` 时再发送一封测试邮件。失败抛出 400（`message` 为 SMTP 错误原因）。
+
+| 参数      | 类型     | 必填 | 描述 |
+|---------|--------|----|----|
+| config  | Object | 是  | `{ host, port, secure, user, pass, fromName, fromAddress }`，`port` 默认 465、`secure` 默认 true |
+| to      | String | 否  | 测试邮件收件人 |
+| subject | String | 否  | 测试邮件主题 |
+| html    | String | 否  | 测试邮件正文 |
+
+返回 `{ success: true }`。
 
 ##### statistics.getOverview
 
@@ -842,7 +870,7 @@ console.log('按小时趋势:', realtime.hourlyTrend);
 | perPage    | Number | 否  | 20  | 每页数量 |
 | currentPage | Number | 否  | 1   | 页码   |
 
-filter 为 Sequelize where 条件，HTTP 接口会转换 `type`、`code`、`name`、`status`、`templateId` 与时间范围
+filter 为 Sequelize where 条件，HTTP 接口会转换 `type`、`code`、`name`、`status`、`templateId`、`tenantId` 与时间范围
 
 ##### record.detail
 
@@ -862,7 +890,7 @@ filter 为 Sequelize where 条件，HTTP 接口会转换 `type`、`code`、`name
 
 ##### upgradeSchema
 
-为模板表、记录表补齐缺失字段，把 `code + type + level` 索引改为唯一索引（先释放已删除模板的编码；存在重复数据时跳过并告警），并创建记录表 `status` 索引。这两个索引不在模型中声明（1.x 老库执行 `sequelize.sync` 时新列尚不存在，建索引会失败并阻断启动），新库同样由本方法创建。PostgreSQL / MySQL / SQLite 通用，`autoUpgrade` 开启时启动自动执行。返回 `{ template: [新增列], record: [新增列], uniqueIndex: 'created' | 'exists' | 'duplicated' | 'failed' | 'skipped', statusIndex: 'created' | 'exists' | 'skipped' }`。
+为模板表、记录表补齐缺失字段（含 `tenantId`），把 `code + type + level`（或 2.0.0 的同名唯一索引）改为 `code + type + level + tenantId` 唯一索引（先释放已删除模板的编码；存在重复数据时跳过并告警），并创建记录表 `status` 索引。这两个索引不在模型中声明（1.x 老库执行 `sequelize.sync` 时新列尚不存在，建索引会失败并阻断启动），新库同样由本方法创建。PostgreSQL / MySQL / SQLite 通用，`autoUpgrade` 开启时启动自动执行。返回 `{ template: [新增列], record: [新增列], uniqueIndex: 'created' | 'exists' | 'duplicated' | 'failed' | 'skipped', statusIndex: 'created' | 'exists' | 'skipped' }`。
 
 ##### migrateTemplates
 
@@ -878,7 +906,7 @@ filter 为 Sequelize where 条件，HTTP 接口会转换 `type`、`code`、`name
 | perPage    | Number | 否  | 20  | 每页数量 |
 | currentPage | Number | 否  | 1   | 页码   |
 
-filter 支持的字段：`type`、`code`、`level`、`status`；`keyword` 按名称、编码模糊搜索
+filter 支持的字段：`type`、`code`、`level`、`status`、`tenantId`；`keyword` 按名称、编码模糊搜索。服务方法不会自动限定 `tenantId`，需要只查全局模板时传 `tenantId: ''`
 
 ##### template.detail
 
@@ -893,7 +921,8 @@ filter 支持的字段：`type`、`code`、`level`、`status`；`keyword` 按名
 对应 HTTP 接口的服务方法，参数与接口请求体一致（`save` / `remove` / `setStatus` / `copy` 额外传 `id`）。错误对象带 `statusCode`（400 语法错误、403 系统模版只读、404 模版不存在、409 编码重复）。
 
 - `remove` 软删除前会把编码改写为 `原编码#deleted#id`，删除后可重建同编码模板
-- `copy` 复制系统模板时保留编码、默认停用，启用后即覆盖同编码系统模板
+- `copy` 复制系统模板时保留编码、默认停用，启用后即覆盖同编码系统模板；传 `tenantId` 时复制为该租户的模板，只影响该租户的发送
+- `create` 可传 `tenantId` 创建租户模板，编码在同租户、同类型的业务模板内唯一
 - `render` 的 `props` 与 `variables[].example` 合并，`props` 优先
 
 ##### template.send
@@ -945,10 +974,11 @@ const result = await fastify.message.services.template.send({
 | extra     | Object | -   | 其它分段（Liquid）    |
 | level     | Number | 1   | 模板级别（0:系统，1:业务） |
 | status    | Number | 0   | 模板状态（0:启用） |
-
-索引：`code + type + level` 唯一。
+| tenantId  | String | ''  | 所属租户，空字符串为全局模板 |
 | createdAt | Date   | -   | 创建时间       |
 | updatedAt | Date   | -   | 更新时间       |
+
+索引：`code + type + level + tenantId` 唯一。
 
 ##### Record 模型
 
@@ -966,5 +996,6 @@ const result = await fastify.message.services.template.send({
 | error      | String | -   | 失败原因 |
 | retryCount | Number | 0   | 重试次数 |
 | userId     | Number | -   | 发送人 |
+| tenantId   | String | -   | 所属租户，重发时使用租户模板与 SMTP |
 | createdAt  | Date   | -   | 创建时间 |
 | updatedAt  | Date   | -   | 更新时间 |

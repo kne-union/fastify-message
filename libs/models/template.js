@@ -44,6 +44,12 @@ module.exports = ({ DataTypes, options }) => {
         type: DataTypes.INTEGER,
         comment: '状态: 0:启用,1:禁用',
         defaultValue: 0
+      },
+      tenantId: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        defaultValue: '',
+        comment: '所属租户，空字符串为全局模版'
       }
     },
     associate: ({ template }) => {
@@ -53,7 +59,7 @@ module.exports = ({ DataTypes, options }) => {
       });
     },
     options: {
-      // code + type + level 唯一索引由 upgradeSchema 创建：老库存在重复或软删除数据时，sync 直接建唯一索引会失败并阻断启动
+      // code + type + level + tenantId 唯一索引由 upgradeSchema 创建：老库存在重复或软删除数据时，sync 直接建唯一索引会失败并阻断启动
       comment: '消息模版'
     }
   };

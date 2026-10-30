@@ -39,6 +39,8 @@ fastify.register(require('@kne/fastify-message'), {
     defaultSubject: '系统通知' // 默认邮件主题
   },
   retry: { times: 2, delay: 1000 }, // 发送失败重试次数与间隔（毫秒），默认不重试
+  // 可选：按租户返回 SMTP 配置 { host, port, secure, user, pass, fromName, fromAddress }，返回空时使用 emailConfig
+  getEmailConfig: async ({ tenantId }) => fastify.tenant.services.mail.resolveEmailConfig({ tenantId }),
   autoUpgrade: true, // 启动时自动补齐表字段与索引、迁移 1.x 模板，默认开启；关闭后需自行调用 services.upgradeSchema()
   isTest: false // 测试模式下不会真实发送邮件
 });
@@ -87,6 +89,16 @@ fastify.register(require('@kne/fastify-message'), {
 
 `sendMessage` 未传 `level` 时，先使用启用中的同编码业务模板（level 1），没有再使用系统模板（level 0）。因此可以在后台把系统模板复制为业务模板（复制后保留编码、默认停用），修改后启用即可替换线上内容；停用业务模板后自动回退到系统模板。停用的模板不能发送。
 
+### 租户模板与租户 SMTP
+
+模板带 `tenantId` 字段（空字符串为全局模板），唯一索引为 `code + type + level + tenantId`。
+
+- `sendMessage` 传 `tenantId` 时，先在该租户启用的模板中按上面的规则选择，没有再回退到全局模板；停用租户模板即恢复全局内容
+- 邮件发送时调用 `getEmailConfig({ tenantId })`，返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
+- 发送记录保存 `tenantId`，重发与启动补发同样使用租户模板和 SMTP
+- `template.copy({ id, tenantId })` 把全局模板复制为租户模板；模板列表接口不传 `filter[tenantId]` 时只返回全局模板
+- `verifyEmailConfig({ config, to })` 校验 SMTP 能否登录，传 `to` 时再发一封测试邮件
+
 模板目录中删除的文件，对应的系统模板会在下次启动时被停用（不删除，保留发送记录关联）；文件恢复后需在后台手动启用。
 
 ### 使用示例
@@ -122,7 +134,7 @@ await fastify.message.services.includeTemplate('./messageTemplate');
 
 1. 模板文件中的 `<%= name %>` 改为 `{{ name }}`，需要输出原始 HTML 的变量改为 `{{ name | raw }}`；`<% if (a) { %>…<% } %>` 改为 `{% if a %}…{% endif %}`
 2. 模板文件扩展名由 `.ejs` 改为 `.liquid`（`.ejs` 文件不再导入）
-3. 数据库无需手工执行 SQL：启动时（`autoUpgrade` 默认开启）自动为模板表、记录表补齐新字段，把 `code + type + level` 索引改为唯一索引并创建记录 `status` 索引，PostgreSQL / MySQL / SQLite 通用。存在重复编码时跳过唯一索引并输出告警，处理重复数据后重启即可；也可以手动调用 `services.upgradeSchema()`
+3. 数据库无需手工执行 SQL：启动时（`autoUpgrade` 默认开启）自动为模板表、记录表补齐新字段，把 `code + type + level + tenantId` 索引改为唯一索引并创建记录 `status` 索引，PostgreSQL / MySQL / SQLite 通用。存在重复编码时跳过唯一索引并输出告警，处理重复数据后重启即可；也可以手动调用 `services.upgradeSchema()`
 4. 数据库中已有模板自动迁移（`services.migrateTemplates()`）：1.x 的合并内容拆成 `subject` / `content` / `extra`，`<%= x %>`、`<%- x %>` 改为 `{{ x }}`（2.0 默认转义输出）；含 `<% if %>` 等逻辑语法的模板会跳过并在日志中列出，需在后台人工改写
 5. 短信发送器收到的 `content` 为 `{ text, ...extra }`，邮件为 `{ subject, html, text, ...extra }`
 6. `sendMessage` 未传 `level` 时会优先使用同编码的启用业务模板；只想用系统模板时显式传 `level: 0`

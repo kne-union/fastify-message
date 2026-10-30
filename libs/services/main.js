@@ -218,25 +218,33 @@ module.exports = fp(async (fastify, options) => {
     fastify.log.info('------end include template------');
   };
 
+  const normalizeTenantId = tenantId => (tenantId === undefined || tenantId === null ? '' : String(tenantId));
+
   // 指定 level 时只取该级别；未指定时优先取启用的业务模版（level 1），没有再回退到系统模版
-  const findSendableTemplate = async ({ code, type, level }) => {
+  // 传 tenantId 时先在该租户的模版中查找，没有启用的再回退到全局模版
+  const findSendableTemplate = async ({ code, type, level, tenantId }) => {
     const hasLevel = level !== undefined && level !== null;
-    const list = await models.template.findAll({
-      where: Object.assign({ code, type }, hasLevel ? { level } : {}),
-      order: [['level', 'DESC']]
-    });
-    if (list.length === 0) {
+    const tenantKey = normalizeTenantId(tenantId);
+    let found = false;
+    for (const key of tenantKey ? [tenantKey, ''] : ['']) {
+      const list = await models.template.findAll({
+        where: Object.assign({ code, type, tenantId: key }, hasLevel ? { level } : {}),
+        order: [['level', 'DESC']]
+      });
+      found = found || list.length > 0;
+      const target = list.find(item => Number(item.status) === 0);
+      if (target) {
+        return target;
+      }
+    }
+    if (!found) {
       throw createHttpError(404, 'template not found');
     }
-    const target = list.find(item => Number(item.status) === 0);
-    if (!target) {
-      throw createHttpError(400, '模版已禁用，无法发送消息');
-    }
-    return target;
+    throw createHttpError(400, '模版已禁用，无法发送消息');
   };
 
-  const messageTemplate = async ({ code, type = 0, level, props }) => {
-    const codeTemplate = await findSendableTemplate({ code, type, level });
+  const messageTemplate = async ({ code, type = 0, level, tenantId, props }) => {
+    const codeTemplate = await findSendableTemplate({ code, type, level, tenantId });
     const content = renderMessage({ template: codeTemplate, props });
 
     return {
@@ -263,12 +271,34 @@ module.exports = fp(async (fastify, options) => {
     transporters.clear();
   });
 
-  const deliver = async ({ type, name, content, props, code, templateId, level, client, targetOptions }) => {
+  const toTransportConfig = config => ({
+    host: config.host,
+    port: config.port,
+    secure: config.secure,
+    auth: {
+      user: config.user,
+      pass: config.pass
+    }
+  });
+
+  // 租户 SMTP 配置：由 options.getEmailConfig 提供，返回空表示使用全局 emailConfig
+  const resolveTenantEmailConfig = async tenantId => {
+    if (!tenantId || typeof options.getEmailConfig !== 'function') {
+      return null;
+    }
+    const config = await options.getEmailConfig({ tenantId });
+    return config && config.host ? Object.assign({ port: 465, secure: true }, config) : null;
+  };
+
+  const deliver = async ({ type, name, content, props, code, templateId, level, tenantId, client, targetOptions }) => {
     const currentSender = options.senders?.[type];
     if (type === 0) {
+      const tenantEmailConfig = await resolveTenantEmailConfig(tenantId);
+      const mailConfig = tenantEmailConfig || emailConfig;
+      const fromAddress = mailConfig.fromAddress || mailConfig.user;
       const mailOptions = {
         ...targetOptions,
-        from: formatAddress(targetOptions.title || emailConfig.user, emailConfig.user),
+        from: formatAddress((tenantEmailConfig && tenantEmailConfig.fromName) || targetOptions.title || fromAddress, fromAddress),
         to: name,
         subject: content.subject || options.subject || emailConfig.defaultSubject || 'Message reminder',
         text: content.text,
@@ -277,24 +307,10 @@ module.exports = fp(async (fastify, options) => {
       };
 
       if (!isTest) {
-        if (typeof currentSender === 'function') {
+        if (!tenantEmailConfig && typeof currentSender === 'function') {
           await currentSender(mailOptions);
         } else {
-          const transporter = getTransporter(
-            merge(
-              {},
-              {
-                host: emailConfig.host,
-                port: emailConfig.port,
-                secure: emailConfig.secure,
-                auth: {
-                  user: emailConfig.user,
-                  pass: emailConfig.pass
-                }
-              },
-              client
-            )
-          );
+          const transporter = getTransporter(merge({}, toTransportConfig(mailConfig), client));
           await transporter.sendMail(mailOptions);
         }
       }
@@ -327,7 +343,7 @@ module.exports = fp(async (fastify, options) => {
   };
 
   const processRecord = async ({ record, content, level, client, targetOptions }) => {
-    const { type, code, name, props, templateId } = record;
+    const { type, code, name, props, templateId, tenantId } = record;
     try {
       const { sendOptions, retryCount } = await deliverWithRetry({
         type,
@@ -337,6 +353,7 @@ module.exports = fp(async (fastify, options) => {
         code,
         templateId,
         level,
+        tenantId,
         client,
         targetOptions
       });
@@ -353,13 +370,15 @@ module.exports = fp(async (fastify, options) => {
 
   // 发送失败在模块内处理（记日志、写失败记录、计入统计），不向业务抛错：返回发送记录，status 为 0 成功 / 1 失败 / 2 待发送
   // async 为 true 时先写入待发送记录并立即返回，后台发送；失败的记录可通过 record.retry 重发
-  const sendMessage = async ({ type = 0, name, props = {}, code, level, client, options: targetOptions, userId, async: isAsync = false }) => {
+  // 传 tenantId 时优先使用该租户的模版和 SMTP 配置（options.getEmailConfig），没有再回退到全局
+  const sendMessage = async ({ type = 0, name, props = {}, code, level, tenantId, client, options: targetOptions, userId, async: isAsync = false }) => {
     targetOptions = Object.assign({}, targetOptions);
-    const recordFields = Object.assign({ type, code, props, name, retryCount: 0, options: stripAttachments(targetOptions) }, userId ? { userId } : {});
+    const tenantKey = normalizeTenantId(tenantId);
+    const recordFields = Object.assign({ type, code, props, name, retryCount: 0, options: stripAttachments(targetOptions) }, userId ? { userId } : {}, tenantKey ? { tenantId: tenantKey } : {});
     try {
       let rendered;
       try {
-        rendered = await messageTemplate({ code, type, level, props });
+        rendered = await messageTemplate({ code, type, level, tenantId: tenantKey, props });
       } catch (error) {
         // 模版不存在 / 已停用 / 渲染失败：同样记为失败记录，方便在后台排查
         fastify.log.error(`消息发送失败(${code}:${type}): ${error.message}`);
@@ -430,9 +449,9 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
-  const assertCodeUnique = async ({ code, type, level, excludeId }) => {
+  const assertCodeUnique = async ({ code, type, level, tenantId, excludeId }) => {
     const exists = await models.template.findOne({
-      where: Object.assign({ code, type, level }, excludeId ? { id: { [Op.ne]: excludeId } } : {})
+      where: Object.assign({ code, type, level, tenantId: normalizeTenantId(tenantId) }, excludeId ? { id: { [Op.ne]: excludeId } } : {})
     });
     if (exists) {
       throw createHttpError(409, `模版编码 ${code} 已存在`);
@@ -453,6 +472,32 @@ module.exports = fp(async (fastify, options) => {
     }
   };
 
+  // 校验 SMTP 配置能否连接登录；传 to 时再发送一封测试邮件
+  const verifyEmailConfig = async ({ config, to, subject, html }) => {
+    if (!config || !config.host) {
+      throw createHttpError(400, 'SMTP 配置不完整');
+    }
+    const mailConfig = Object.assign({ port: 465, secure: true }, config);
+    const transporter = nodemailer.createTransport(toTransportConfig(mailConfig));
+    try {
+      await transporter.verify();
+      if (to) {
+        const fromAddress = mailConfig.fromAddress || mailConfig.user;
+        await transporter.sendMail({
+          from: formatAddress(mailConfig.fromName || fromAddress, fromAddress),
+          to,
+          subject: subject || 'SMTP test',
+          html: html || '<p>SMTP test</p>'
+        });
+      }
+      return { success: true };
+    } catch (e) {
+      throw createHttpError(400, e.message);
+    } finally {
+      transporter.close();
+    }
+  };
+
   Object.assign(fastify[options.name].services, {
     includeTemplate,
     messageTemplate,
@@ -461,6 +506,7 @@ module.exports = fp(async (fastify, options) => {
     validateTemplate,
     renderMessage,
     sendMessage,
+    verifyEmailConfig,
     processPendingRecords,
 
     // 发送记录相关服务
@@ -511,11 +557,12 @@ module.exports = fp(async (fastify, options) => {
 
       detail: async ({ id }) => await getTemplate(id),
 
-      create: async ({ code, type = 0, userId, ...data }) => {
+      create: async ({ code, type = 0, userId, tenantId, ...data }) => {
         const fields = pickTemplateFields(data);
         validateOrBadRequest(fields);
-        await assertCodeUnique({ code, type, level: 1 });
-        return await models.template.create(Object.assign({ code, type, level: 1, status: 0 }, fields, userId ? { userId } : {}));
+        const tenantKey = normalizeTenantId(tenantId);
+        await assertCodeUnique({ code, type, level: 1, tenantId: tenantKey });
+        return await models.template.create(Object.assign({ code, type, level: 1, status: 0, tenantId: tenantKey }, fields, userId ? { userId } : {}));
       },
 
       save: async ({ id, code, ...data }) => {
@@ -524,7 +571,7 @@ module.exports = fp(async (fastify, options) => {
         const fields = pickTemplateFields(data);
         validateOrBadRequest(Object.assign({ subject: tpl.subject, content: tpl.content, extra: tpl.extra }, fields));
         if (code && code !== tpl.code) {
-          await assertCodeUnique({ code, type: tpl.type, level: tpl.level, excludeId: tpl.id });
+          await assertCodeUnique({ code, type: tpl.type, level: tpl.level, tenantId: tpl.tenantId, excludeId: tpl.id });
           fields.code = code;
         }
         Object.assign(tpl, fields);
@@ -550,14 +597,17 @@ module.exports = fp(async (fastify, options) => {
       },
 
       // 复制为停用的业务模版；系统模版复制后保留编码（启用后即覆盖同编码系统模版），已存在时追加 _copy 后缀
-      copy: async ({ id, userId }) => {
+      // 传 tenantId 时复制到该租户（不传则复制到模版原所属范围），租户模版启用后只覆盖该租户的发送
+      copy: async ({ id, userId, tenantId }) => {
         const tpl = await getTemplate(id);
+        const tenantKey = tenantId === undefined || tenantId === null ? normalizeTenantId(tpl.tenantId) : normalizeTenantId(tenantId);
         const used = (
           await models.template.findAll({
             attributes: ['code'],
             where: {
               type: tpl.type,
               level: 1,
+              tenantId: tenantKey,
               [Op.or]: [{ code: tpl.code }, likeCondition(models.template, 'code', `${escapeLike(`${tpl.code}_copy`)}%`)]
             }
           })
@@ -573,6 +623,7 @@ module.exports = fp(async (fastify, options) => {
               type: tpl.type,
               level: 1,
               status: 1,
+              tenantId: tenantKey,
               name: `${tpl.name || tpl.code}（副本）`
             },
             pickTemplateFields({
@@ -611,6 +662,7 @@ module.exports = fp(async (fastify, options) => {
           props,
           code: tpl.code,
           level: tpl.level,
+          tenantId: tpl.tenantId,
           userId
         });
         return { success: Number(record?.status) === RECORD_STATUS.success, recordId: record?.id };

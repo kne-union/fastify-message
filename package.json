@@ -1,6 +1,6 @@
 {
   "name": "@kne/fastify-message",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "管理消息发送，支持邮件、短信等消息，模板基于 Liquid（@kne/message-template）",
   "main": "index.js",
   "scripts": {

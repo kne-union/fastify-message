@@ -270,6 +270,7 @@ eventSource.addEventListener('error', (event) => {
 | filter[code]    | String | 否  | -   | 模版编码（精确匹配）       |
 | filter[level]   | Number | 否  | -   | 模版级别：0=系统，1=业务  |
 | filter[status]  | Number | 否  | -   | 状态：0=启用，1=禁用    |
+| filter[tenantId] | String | 否 | -   | 所属租户，不传时只返回全局模版 |
 | filter[keyword] | String | 否  | -   | 按模版名称、编码模糊搜索（不区分大小写，`%`、`_` 按字面匹配） |
 
 **响应示例**：
@@ -501,6 +502,7 @@ await fastify.message.services.includeTemplate('./templates');
 | code  | String | 是  | -   | 模板编码       |
 | type  | Number | 否  | 0   | 模板类型（0:邮件） |
 | level | Number | 否  | -   | 模板级别，不传时业务模板优先 |
+| tenantId | String | 否 | -  | 租户ID，传入时优先使用该租户启用的模板，没有再回退全局模板 |
 | props | Object | 是  | -   | 模板变量       |
 
 | 返回值字段           | 类型     | 描述     |
@@ -570,6 +572,7 @@ const message = await fastify.message.services.messageTemplate({
 | props   | Object | 否  | {}  | 模板变量          |
 | code    | String | 是  | -   | 模板编码          |
 | level   | Number | 否  | -   | 模板级别，不传时业务模板优先 |
+| tenantId | String | 否 | -   | 租户ID：优先使用租户模板；邮件通过插件配置 `getEmailConfig` 取租户 SMTP，写入记录供重发使用 |
 | client  | Object | 否  | -   | 客户端配置（覆盖默认配置） |
 | options | Object | 否  | -   | 发送选项          |
 | userId  | String | 否  | -   | 发送人，写入记录      |
@@ -607,6 +610,19 @@ await fastify.message.services.sendMessage({
   }
 });
 ```
+
+#### verifyEmailConfig
+
+校验 SMTP 配置能否连接并登录，传 `to` 时再发送一封测试邮件。失败抛出 400（`message` 为 SMTP 错误原因）。
+
+| 参数      | 类型     | 必填 | 描述 |
+|---------|--------|----|----|
+| config  | Object | 是  | `{ host, port, secure, user, pass, fromName, fromAddress }`，`port` 默认 465、`secure` 默认 true |
+| to      | String | 否  | 测试邮件收件人 |
+| subject | String | 否  | 测试邮件主题 |
+| html    | String | 否  | 测试邮件正文 |
+
+返回 `{ success: true }`。
 
 #### statistics.getOverview
 
@@ -688,7 +704,7 @@ console.log('按小时趋势:', realtime.hourlyTrend);
 | perPage    | Number | 否  | 20  | 每页数量 |
 | currentPage | Number | 否  | 1   | 页码   |
 
-filter 为 Sequelize where 条件，HTTP 接口会转换 `type`、`code`、`name`、`status`、`templateId` 与时间范围
+filter 为 Sequelize where 条件，HTTP 接口会转换 `type`、`code`、`name`、`status`、`templateId`、`tenantId` 与时间范围
 
 #### record.detail
 
@@ -708,7 +724,7 @@ filter 为 Sequelize where 条件，HTTP 接口会转换 `type`、`code`、`name
 
 #### upgradeSchema
 
-为模板表、记录表补齐缺失字段，把 `code + type + level` 索引改为唯一索引（先释放已删除模板的编码；存在重复数据时跳过并告警），并创建记录表 `status` 索引。这两个索引不在模型中声明（1.x 老库执行 `sequelize.sync` 时新列尚不存在，建索引会失败并阻断启动），新库同样由本方法创建。PostgreSQL / MySQL / SQLite 通用，`autoUpgrade` 开启时启动自动执行。返回 `{ template: [新增列], record: [新增列], uniqueIndex: 'created' | 'exists' | 'duplicated' | 'failed' | 'skipped', statusIndex: 'created' | 'exists' | 'skipped' }`。
+为模板表、记录表补齐缺失字段（含 `tenantId`），把 `code + type + level`（或 2.0.0 的同名唯一索引）改为 `code + type + level + tenantId` 唯一索引（先释放已删除模板的编码；存在重复数据时跳过并告警），并创建记录表 `status` 索引。这两个索引不在模型中声明（1.x 老库执行 `sequelize.sync` 时新列尚不存在，建索引会失败并阻断启动），新库同样由本方法创建。PostgreSQL / MySQL / SQLite 通用，`autoUpgrade` 开启时启动自动执行。返回 `{ template: [新增列], record: [新增列], uniqueIndex: 'created' | 'exists' | 'duplicated' | 'failed' | 'skipped', statusIndex: 'created' | 'exists' | 'skipped' }`。
 
 #### migrateTemplates
 
@@ -724,7 +740,7 @@ filter 为 Sequelize where 条件，HTTP 接口会转换 `type`、`code`、`name
 | perPage    | Number | 否  | 20  | 每页数量 |
 | currentPage | Number | 否  | 1   | 页码   |
 
-filter 支持的字段：`type`、`code`、`level`、`status`；`keyword` 按名称、编码模糊搜索
+filter 支持的字段：`type`、`code`、`level`、`status`、`tenantId`；`keyword` 按名称、编码模糊搜索。服务方法不会自动限定 `tenantId`，需要只查全局模板时传 `tenantId: ''`
 
 #### template.detail
 
@@ -739,7 +755,8 @@ filter 支持的字段：`type`、`code`、`level`、`status`；`keyword` 按名
 对应 HTTP 接口的服务方法，参数与接口请求体一致（`save` / `remove` / `setStatus` / `copy` 额外传 `id`）。错误对象带 `statusCode`（400 语法错误、403 系统模版只读、404 模版不存在、409 编码重复）。
 
 - `remove` 软删除前会把编码改写为 `原编码#deleted#id`，删除后可重建同编码模板
-- `copy` 复制系统模板时保留编码、默认停用，启用后即覆盖同编码系统模板
+- `copy` 复制系统模板时保留编码、默认停用，启用后即覆盖同编码系统模板；传 `tenantId` 时复制为该租户的模板，只影响该租户的发送
+- `create` 可传 `tenantId` 创建租户模板，编码在同租户、同类型的业务模板内唯一
 - `render` 的 `props` 与 `variables[].example` 合并，`props` 优先
 
 #### template.send
@@ -791,10 +808,11 @@ const result = await fastify.message.services.template.send({
 | extra     | Object | -   | 其它分段（Liquid）    |
 | level     | Number | 1   | 模板级别（0:系统，1:业务） |
 | status    | Number | 0   | 模板状态（0:启用） |
-
-索引：`code + type + level` 唯一。
+| tenantId  | String | ''  | 所属租户，空字符串为全局模板 |
 | createdAt | Date   | -   | 创建时间       |
 | updatedAt | Date   | -   | 更新时间       |
+
+索引：`code + type + level + tenantId` 唯一。
 
 #### Record 模型
 
@@ -812,5 +830,6 @@ const result = await fastify.message.services.template.send({
 | error      | String | -   | 失败原因 |
 | retryCount | Number | 0   | 重试次数 |
 | userId     | Number | -   | 发送人 |
+| tenantId   | String | -   | 所属租户，重发时使用租户模板与 SMTP |
 | createdAt  | Date   | -   | 创建时间 |
 | updatedAt  | Date   | -   | 更新时间 |
