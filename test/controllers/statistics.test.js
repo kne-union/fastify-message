@@ -142,7 +142,7 @@ describe('@kne/fastify-message 统计数据接口', function () {
 
   it('should return SSE stream with correct headers', async function () {
     this.timeout(5000);
-    const address = await fastify.listen({ port: 0 });
+    const address = await fastify.listen({ port: 0, host: '127.0.0.1' });
     await new Promise((resolve, reject) => {
       const url = new URL(`${address}/api/message/statistics/sse`);
       const req = http.request({
@@ -176,7 +176,7 @@ describe('@kne/fastify-message 统计数据接口', function () {
 
   it('should return SSE stream with custom interval', async function () {
     this.timeout(5000);
-    const address = await fastify.listen({ port: 0 });
+    const address = await fastify.listen({ port: 0, host: '127.0.0.1' });
     await new Promise((resolve, reject) => {
       const url = new URL(`${address}/api/message/statistics/sse?interval=3`);
       const req = http.request({
@@ -209,7 +209,7 @@ describe('@kne/fastify-message 统计数据接口', function () {
 
   it('should stop SSE push after client disconnects', async function () {
     this.timeout(8000);
-    const address = await fastify.listen({ port: 0 });
+    const address = await fastify.listen({ port: 0, host: '127.0.0.1' });
     let chunksAfterDestroy = 0;
     await new Promise((resolve, reject) => {
       const url = new URL(`${address}/api/message/statistics/sse?interval=1`);
@@ -248,11 +248,12 @@ describe('@kne/fastify-message 统计数据接口', function () {
       code: 'sse_update',
       type: 0,
       name: 'SSE更新',
-      content: '<!-- subject -->SSE<!-- html -->内容',
+      subject: 'SSE',
+      content: '内容',
       level: 0
     });
 
-    const address = await fastify.listen({ port: 0 });
+    const address = await fastify.listen({ port: 0, host: '127.0.0.1' });
     await new Promise((resolve, reject) => {
       const url = new URL(`${address}/api/message/statistics/sse?interval=1`);
       const req = http.request({

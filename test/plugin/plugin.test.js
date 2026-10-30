@@ -121,7 +121,7 @@ describe('@kne/fastify-message 插件注册', function () {
     await fs.ensureDir(tempDir);
     try {
       await fs.writeFile(
-        path.join(tempDir, 'startup_test.ejs'),
+        path.join(tempDir, 'startup_test.liquid'),
         '<!-- subject -->启动测试<!-- html --><div>启动测试内容</div>'
       );
 
@@ -140,11 +140,11 @@ describe('@kne/fastify-message 插件注册', function () {
     await fs.ensureDir(tempDir);
     try {
       await fs.writeFile(
-        path.join(tempDir, 'verify_1_验证码.ejs'),
-        '<!-- subject -->您的验证码<!-- html --><div>验证码为：<%= code %></div>'
+        path.join(tempDir, 'verify_1_验证码.liquid'),
+        '<!-- text -->验证码为：{{ code }}'
       );
       await fs.writeFile(
-        path.join(tempDir, 'welcome.ejs'),
+        path.join(tempDir, 'welcome.liquid'),
         '<!-- subject -->欢迎<!-- html --><p>欢迎您</p>'
       );
 
@@ -158,7 +158,8 @@ describe('@kne/fastify-message 插件注册', function () {
       expect(verifyTpl.type).to.equal(1);
       expect(verifyTpl.name).to.equal('验证码');
       expect(verifyTpl.level).to.equal(0);
-      expect(verifyTpl.content).to.include('您的验证码');
+      expect(verifyTpl.content).to.equal('验证码为：{{ code }}');
+      expect(verifyTpl.subject).to.equal('');
 
       const welcomeTpl = templates.find(t => t.code === 'welcome');
       expect(welcomeTpl).to.exist;
@@ -175,7 +176,7 @@ describe('@kne/fastify-message 插件注册', function () {
     await fs.ensureDir(tempDir);
     try {
       await fs.writeFile(
-        path.join(tempDir, 'welcome.ejs'),
+        path.join(tempDir, 'welcome.liquid'),
         '<!-- subject -->旧主题<!-- html --><div>旧内容</div>'
       );
 
@@ -184,9 +185,10 @@ describe('@kne/fastify-message 插件注册', function () {
       let templates = await fastify.message.models.template.findAll();
       expect(templates.length).to.equal(1);
       expect(templates[0].content).to.include('旧内容');
+      expect(templates[0].subject).to.equal('旧主题');
 
       await fs.writeFile(
-        path.join(tempDir, 'welcome.ejs'),
+        path.join(tempDir, 'welcome.liquid'),
         '<!-- subject -->新主题<!-- html --><div>新内容</div>'
       );
 
@@ -194,7 +196,8 @@ describe('@kne/fastify-message 插件注册', function () {
 
       templates = await fastify.message.models.template.findAll();
       expect(templates.length).to.equal(1);
-      expect(templates[0].content).to.include('新内容');
+      expect(templates[0].content).to.equal('<div>新内容</div>');
+      expect(templates[0].subject).to.equal('新主题');
     } finally {
       await fs.remove(tempDir);
     }

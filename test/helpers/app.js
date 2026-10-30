@@ -19,6 +19,21 @@ const createTestUserModel = sequelize => {
   });
 };
 
+// 线上 @kne/fastify-sequelize 会执行模型 associate；测试用的版本不会，这里补上同样的关联列（不加外键约束）
+const applyAssociations = (fastify, name = 'message') => {
+  const { models } = fastify[name];
+  const UserModel = fastify.sequelize.instance.models.user;
+  models.template.belongsTo(UserModel, { foreignKey: 'userId', constraints: false });
+  models.record.belongsTo(UserModel, { foreignKey: 'userId', constraints: false });
+  models.record.belongsTo(models.template, { constraints: false });
+};
+
+// 线上顺序：sequelize.sync 建表后由插件执行 upgradeSchema 补建索引；测试的 syncPromise 提前 resolve，这里按同样顺序补上
+const syncTables = async (fastify, name = 'message', syncOptions) => {
+  await fastify.sequelize.instance.sync(syncOptions);
+  await fastify[name].services.upgradeSchema();
+};
+
 const createFastify = async (options = {}) => {
   const fastify = Fastify({
     routerOptions: {
@@ -52,12 +67,13 @@ const createFastify = async (options = {}) => {
   });
 
   await fastify.ready();
+  applyAssociations(fastify, options.name);
 
   if (options.templateDir) {
-    await fastify.sequelize.instance.sync();
+    await syncTables(fastify, options.name);
     await fastify[options.name || 'message'].services.includeTemplate(options.templateDir);
   } else {
-    await fastify.sequelize.instance.sync({ force: true });
+    await syncTables(fastify, options.name, { force: true });
   }
 
   return fastify;
@@ -100,7 +116,8 @@ const createFastifyWithAccount = async (options = {}) => {
   });
 
   await fastify.ready();
-  await fastify.sequelize.instance.sync({ force: true });
+  applyAssociations(fastify, options.name);
+  await syncTables(fastify, options.name, { force: true });
 
   return fastify;
 };
@@ -135,7 +152,8 @@ const createFastifyWithDefaultAuthenticate = async (options = {}) => {
   });
 
   await fastify.ready();
-  await fastify.sequelize.instance.sync({ force: true });
+  applyAssociations(fastify, options.name);
+  await syncTables(fastify, options.name, { force: true });
 
   return fastify;
 };
@@ -162,7 +180,7 @@ const getRealtimeStatistics = async (fastify, params = {}) => {
   const currentAddress = fastify.server.address();
   const baseUrl = currentAddress && typeof currentAddress === 'object'
     ? `http://127.0.0.1:${currentAddress.port}`
-    : await fastify.listen({ port: 0 });
+    : await fastify.listen({ port: 0, host: '127.0.0.1' });
   const query = qs.stringify(params);
   const url = new URL(`${baseUrl}/api/message/statistics/sse${query ? `?${query}` : ''}`);
 

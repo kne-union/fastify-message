@@ -15,9 +15,25 @@ module.exports = ({ DataTypes, options }) => {
         comment: '模版类型: 0:email,1:SMS',
         allowNull: false
       },
+      subject: {
+        type: DataTypes.TEXT,
+        comment: '邮件主题模版（Liquid）'
+      },
       content: {
         type: DataTypes.TEXT,
-        comment: '模版内容'
+        comment: '模版正文（Liquid）：邮件为 HTML，短信为纯文本'
+      },
+      description: {
+        type: DataTypes.TEXT,
+        comment: '模版描述'
+      },
+      variables: {
+        type: DataTypes.JSON,
+        comment: '模版变量 [{ name, label, example }]'
+      },
+      extra: {
+        type: DataTypes.JSON,
+        comment: '其它分段（Liquid），如短信服务商模版编码'
       },
       level: {
         type: DataTypes.INTEGER,
@@ -28,6 +44,12 @@ module.exports = ({ DataTypes, options }) => {
         type: DataTypes.INTEGER,
         comment: '状态: 0:启用,1:禁用',
         defaultValue: 0
+      },
+      tenantId: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        defaultValue: '',
+        comment: '所属租户，空字符串为全局模版'
       }
     },
     associate: ({ template }) => {
@@ -37,10 +59,8 @@ module.exports = ({ DataTypes, options }) => {
       });
     },
     options: {
-      comment: '消息模版',
-      indexes: [
-        { fields: ['code', 'type', 'level'] }
-      ]
+      // code + type + level + tenantId 唯一索引由 upgradeSchema 创建：老库存在重复或软删除数据时，sync 直接建唯一索引会失败并阻断启动
+      comment: '消息模版'
     }
   };
 };

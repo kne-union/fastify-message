@@ -33,7 +33,8 @@ describe('@kne/fastify-message 发送记录接口', function () {
       code: 'test',
       type: 0,
       name: '测试',
-      content: '<!-- subject -->主题<!-- html -->内容',
+      subject: '主题',
+      content: '内容',
       level: 0
     });
 
@@ -67,7 +68,7 @@ describe('@kne/fastify-message 发送记录接口', function () {
       code: 'test',
       type: 0,
       name: '邮件模板',
-      content: '<!-- subject -->主题',
+      subject: '主题',
       level: 0
     });
 

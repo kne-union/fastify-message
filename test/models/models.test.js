@@ -31,7 +31,11 @@ describe('@kne/fastify-message 模型定义', () => {
 
     expect(definition.model.name.type).to.equal('STRING');
     expect(definition.model.type.defaultValue).to.equal(0);
-    expect(definition.model.content.type).to.equal('JSONB');
+    expect(definition.model.content.type).to.equal('JSON');
+    expect(definition.model.status.defaultValue).to.equal(0);
+    expect(definition.model.retryCount.defaultValue).to.equal(0);
+    // 新增列上的索引由 upgradeSchema 创建，模型里不声明，避免 1.x 老库 sync 失败
+    expect(definition.options.indexes.some(index => index.fields.includes('status'))).to.equal(false);
     expect(userModelRequested).to.equal(true);
     expect(belongsToCalls.length).to.equal(2);
     expect(belongsToCalls[0][0]).to.equal('UserModel');
@@ -58,6 +62,7 @@ describe('@kne/fastify-message 模型定义', () => {
     expect(definition.model.type.allowNull).to.equal(false);
     expect(definition.model.level.defaultValue).to.equal(1);
     expect(definition.model.status.defaultValue).to.equal(0);
+    expect(definition.options.indexes).to.equal(undefined);
     expect(userModelRequested).to.equal(true);
     expect(belongsToCalls.length).to.equal(1);
     expect(belongsToCalls[0][0]).to.equal('UserModel');
