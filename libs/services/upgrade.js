@@ -1,6 +1,8 @@
 const fp = require('fastify-plugin');
 
-const UNIQUE_FIELDS = ['code', 'type', 'level'];
+const UNIQUE_FIELDS = ['code', 'type', 'level', 'tenantId'];
+// 2.0.x 的 code + type + level 唯一索引，升级时替换
+const LEGACY_UNIQUE_FIELDS = ['code', 'type', 'level'];
 
 // 1.x 的 lodash 模版插值：<%= x %>（原样）/ <%- x %>（转义）都迁移为 Liquid 的 {{ x }}（转义输出）
 const EJS_INTERPOLATE = /<%[=-]\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*%>/g;
@@ -56,27 +58,29 @@ module.exports = fp(async (fastify, options) => {
     const table = models.template.getTableName();
     if (!(await describeTable(table))) return 'skipped';
     const indexes = await queryInterface.showIndex(table);
-    const sameFields = index => {
+    const attributes = models.template.getAttributes();
+    const uniqueColumns = UNIQUE_FIELDS.map(name => attributes[name].field || name);
+    const sameFields = (index, target) => {
       const fields = (index.fields || []).map(item => item.attribute || item.name);
-      return fields.length === UNIQUE_FIELDS.length && UNIQUE_FIELDS.every(field => fields.includes(field));
+      return fields.length === target.length && target.every(field => fields.includes(field));
     };
-    const current = indexes.filter(sameFields);
-    if (current.some(index => index.unique)) return 'exists';
+    if (indexes.some(index => index.unique && sameFields(index, uniqueColumns))) return 'exists';
+    const current = indexes.filter(index => sameFields(index, uniqueColumns) || sameFields(index, LEGACY_UNIQUE_FIELDS));
 
     await releaseDeletedCodes();
     const duplicates = await models.template.findAll({
       attributes: UNIQUE_FIELDS,
-      group: UNIQUE_FIELDS,
+      group: uniqueColumns,
       having: sequelize.where(sequelize.fn('COUNT', sequelize.col('id')), '>', 1),
       raw: true
     });
     if (duplicates.length > 0) {
-      fastify.log.warn(`[fastify-message] 模版存在重复的 code + type + level，未创建唯一索引: ${duplicates.map(item => `${item.code}:${item.type}:${item.level}`).join(', ')}`);
+      fastify.log.warn(`[fastify-message] 模版存在重复的 code + type + level + tenantId，未创建唯一索引: ${duplicates.map(item => `${item.code}:${item.type}:${item.level}:${item.tenantId}`).join(', ')}`);
       return 'duplicated';
     }
     // 先建唯一索引再删旧索引，建索引失败时保留原索引
     try {
-      await queryInterface.addIndex(table, UNIQUE_FIELDS, { unique: true, name: `${table}_code_type_level_unique` });
+      await queryInterface.addIndex(table, uniqueColumns, { unique: true, name: `${table}_code_type_level_tenant_unique` });
     } catch (e) {
       fastify.log.warn(`[fastify-message] 创建模版唯一索引失败，保留原索引: ${e.message}`);
       return 'failed';

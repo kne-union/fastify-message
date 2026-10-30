@@ -33,6 +33,7 @@ const templateProperties = {
   description: { type: 'string', nullable: true, description: '模版描述' },
   variables: variablesSchema,
   extra: extraSchema,
+  tenantId: { type: 'string', description: '所属租户，空字符串为全局模版' },
   createdAt: { type: 'string', description: '创建时间' },
   updatedAt: { type: 'string', description: '更新时间' }
 };
@@ -69,6 +70,7 @@ const recordProperties = {
   retryCount: { type: 'integer', description: '重试次数' },
   templateId: { type: 'string', description: '模板ID' },
   userId: { type: 'string', nullable: true, description: '发送用户ID，系统发送时为空' },
+  tenantId: { type: 'string', nullable: true, description: '所属租户，全局发送时为空' },
   createdAt: { type: 'string', description: '创建时间' },
   updatedAt: { type: 'string', description: '更新时间' }
 };
@@ -101,6 +103,7 @@ module.exports = fp(async (fastify, options) => {
                 name: { type: 'string', description: '发送对象（邮箱/手机号）' },
                 status: { type: 'integer', description: '发送状态: 0=成功, 1=失败, 2=待发送' },
                 templateId: { type: 'string', description: '模板ID' },
+                tenantId: { type: 'string', description: '所属租户' },
                 startTime: { type: 'string', format: 'date-time', description: '发送时间起（含）' },
                 endTime: { type: 'string', format: 'date-time', description: '发送时间止（含）' }
               }
@@ -131,7 +134,7 @@ module.exports = fp(async (fastify, options) => {
     },
     async request => {
       const { currentPage = 1, perPage = 20, filter = {} } = request.query;
-      const { type, code, name, status, templateId, startTime, endTime } = filter;
+      const { type, code, name, status, templateId, tenantId, startTime, endTime } = filter;
 
       const where = {};
       if (type !== undefined) where.type = type;
@@ -139,6 +142,7 @@ module.exports = fp(async (fastify, options) => {
       if (name) where.name = name;
       if (status !== undefined) where.status = status;
       if (templateId) where.templateId = templateId;
+      if (tenantId) where.tenantId = tenantId;
       if (startTime || endTime) {
         where.createdAt = Object.assign({}, startTime ? { [Op.gte]: new Date(startTime) } : {}, endTime ? { [Op.lte]: new Date(endTime) } : {});
       }
@@ -262,6 +266,7 @@ module.exports = fp(async (fastify, options) => {
                 code: { type: 'string', description: '模版编码' },
                 level: { type: 'integer', description: '模版级别: 0=系统, 1=业务' },
                 status: { type: 'integer', description: '状态: 0=启用, 1=禁用' },
+                tenantId: { type: 'string', description: '所属租户，不传时只查全局模版' },
                 keyword: { type: 'string', description: '按模版名称、编码模糊搜索' }
               }
             }
@@ -291,9 +296,9 @@ module.exports = fp(async (fastify, options) => {
     },
     async request => {
       const { currentPage = 1, perPage = 20, filter = {} } = request.query;
-      const { type, code, level, status, keyword } = filter;
+      const { type, code, level, status, tenantId, keyword } = filter;
 
-      const where = {};
+      const where = { tenantId: tenantId || '' };
       if (type !== undefined) where.type = type;
       if (code) where.code = code;
       if (level !== undefined) where.level = level;
