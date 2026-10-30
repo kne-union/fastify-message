@@ -19,8 +19,26 @@ module.exports = ({ DataTypes, options }) => {
         comment: '消息模版变量'
       },
       content: {
-        type: DataTypes.JSONB,
+        type: DataTypes.JSON,
         comment: '消息内容'
+      },
+      options: {
+        type: DataTypes.JSON,
+        comment: '发送参数（附件只保留描述信息），重发时使用'
+      },
+      status: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+        comment: '发送状态: 0:成功,1:失败,2:待发送'
+      },
+      error: {
+        type: DataTypes.TEXT,
+        comment: '失败原因'
+      },
+      retryCount: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0,
+        comment: '重试次数'
       }
     },
     associate: ({ record, template }) => {
@@ -32,12 +50,8 @@ module.exports = ({ DataTypes, options }) => {
     },
     options: {
       comment: '系统消息记录',
-      indexes: [
-        { fields: ['created_at'] },
-        { fields: ['type'] },
-        { fields: ['code'] },
-        { fields: ['type', 'code'] }
-      ]
+      // status 索引由 upgradeSchema 在补列后创建：老库的 status 列不存在，sync 建索引会失败并阻断启动
+      indexes: [{ fields: ['created_at'] }, { fields: ['type'] }, { fields: ['code'] }, { fields: ['type', 'code'] }]
     }
   };
 };

@@ -35,7 +35,7 @@ describe('@kne/fastify-message 模板接口与权限', function () {
           code: `template_${i}`,
           type: 0,
           name: `模板${i}`,
-          content: '<!-- subject -->主题',
+          subject: '主题',
           level: i < 5 ? 0 : 1
         });
       }
@@ -116,7 +116,8 @@ describe('@kne/fastify-message 模板接口与权限', function () {
         code: 'test',
         type: 0,
         name: '测试模板',
-        content: '<!-- subject -->主题<!-- html -->内容',
+        subject: '主题',
+        content: '内容',
         level: 0
       });
 
@@ -164,7 +165,8 @@ describe('@kne/fastify-message 模板接口与权限', function () {
         code: 'welcome',
         type: 0,
         name: '欢迎邮件',
-        content: '<!-- subject -->欢迎<!-- html --><p>你好</p>',
+        subject: '欢迎',
+        content: '<p>你好</p>',
         level: 0,
         status: 0
       });
@@ -200,7 +202,8 @@ describe('@kne/fastify-message 模板接口与权限', function () {
           code: 'sms_notify',
           type: 1,
           name: '短信通知',
-          content: '<!-- subject -->通知<!-- html -->内容',
+          subject: '通知',
+          content: '内容',
           level: 0,
           status: 0
         });
@@ -292,6 +295,87 @@ describe('@kne/fastify-message 模板接口与权限', function () {
       });
 
       expect(response.statusCode).to.equal(400);
+    });
+  });
+
+  describe('消息模版管理接口', () => {
+    it('should create, update, copy, set status and delete template', async () => {
+      const created = await fastify.inject({
+        method: 'POST',
+        url: '/api/message/templates',
+        payload: {
+          name: '订单通知',
+          code: 'order',
+          type: 0,
+          subject: '订单 {{ orderNo }}',
+          content: '<p>{{ orderNo }} 已发货</p>',
+          variables: [{ name: 'orderNo', label: '订单号', example: 'A001' }]
+        }
+      });
+      expect(created.statusCode).to.equal(200);
+      const tpl = JSON.parse(created.body);
+      expect(tpl.level).to.equal(1);
+      expect(tpl.variables).to.deep.equal([{ name: 'orderNo', label: '订单号', example: 'A001' }]);
+
+      const saved = await fastify.inject({
+        method: 'PUT',
+        url: `/api/message/templates/${tpl.id}`,
+        payload: { name: '订单发货通知', description: '发货后发送' }
+      });
+      expect(saved.statusCode).to.equal(200);
+      expect(JSON.parse(saved.body).name).to.equal('订单发货通知');
+
+      const status = await fastify.inject({ method: 'POST', url: `/api/message/templates/${tpl.id}/status`, payload: { status: 1 } });
+      expect(JSON.parse(status.body).status).to.equal(1);
+
+      const copied = await fastify.inject({ method: 'POST', url: `/api/message/templates/${tpl.id}/copy` });
+      expect(JSON.parse(copied.body).code).to.equal('order_copy');
+
+      const removed = await fastify.inject({ method: 'DELETE', url: `/api/message/templates/${tpl.id}` });
+      expect(removed.statusCode).to.equal(200);
+      expect(await fastify.message.models.template.count()).to.equal(1);
+    });
+
+    it('should return 400 for invalid syntax, 409 for duplicated code and 403 for system template', async () => {
+      const invalid = await fastify.inject({
+        method: 'POST',
+        url: '/api/message/templates',
+        payload: { name: '错误', code: 'bad', type: 0, content: '<p>{{ name </p>' }
+      });
+      expect(invalid.statusCode).to.equal(400);
+
+      const payload = { name: '短信', code: 'sms', type: 1, content: '验证码 {{ code }}' };
+      await fastify.inject({ method: 'POST', url: '/api/message/templates', payload });
+      const duplicated = await fastify.inject({ method: 'POST', url: '/api/message/templates', payload });
+      expect(duplicated.statusCode).to.equal(409);
+
+      const system = await fastify.message.models.template.create({ code: 'sys', type: 0, level: 0, name: '系统', content: '<p>x</p>' });
+      const forbidden = await fastify.inject({ method: 'DELETE', url: `/api/message/templates/${system.id}` });
+      expect(forbidden.statusCode).to.equal(403);
+    });
+
+    it('should render saved template by id with props', async () => {
+      const tpl = await fastify.message.models.template.create({ code: 'hello', type: 1, level: 1, name: '问候', content: '你好 {{ name }}' });
+      const response = await fastify.inject({
+        method: 'POST',
+        url: '/api/message/templates/render',
+        payload: { templateId: String(tpl.id), props: { name: '李四' } }
+      });
+      expect(response.statusCode).to.equal(200);
+      const body = JSON.parse(response.body);
+      expect(body.type).to.equal(1);
+      expect(body.text).to.equal('你好 李四');
+    });
+
+    it('should filter templates by keyword', async () => {
+      const { models } = fastify.message;
+      await models.template.create({ code: 'order_ship', type: 0, name: '发货通知', content: '' });
+      await models.template.create({ code: 'register', type: 0, name: '注册验证码', content: '' });
+
+      const response = await fastify.inject({ method: 'GET', url: '/api/message/templates?filter[keyword]=发货' });
+      const body = JSON.parse(response.body);
+      expect(body.totalCount).to.equal(1);
+      expect(body.pageData[0].code).to.equal('order_ship');
     });
   });
 

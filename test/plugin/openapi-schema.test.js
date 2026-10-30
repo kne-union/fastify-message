@@ -48,7 +48,7 @@ describe('@kne/fastify-message OpenAPI 文档完整性', function () {
       checkProps(`${name} params`, schema.params);
     });
     await fastify.close();
-    expect(messageRoutes.length).to.equal(7);
+    expect(messageRoutes.length).to.equal(14);
     expect(missing).to.deep.equal([]);
   });
 });
