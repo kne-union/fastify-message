@@ -196,6 +196,40 @@ describe('@kne/fastify-message 租户邮件设置 mailSetting', function () {
       const draft = await mailSetting.templatePreview({ tenantId: 'c1', code: 'invite', template: { subject: '草稿 {{ name }}', content: '<b>{{ name }}</b>' }, props: { name: '王五' } });
       expect(draft).to.include({ subject: '草稿 王五', html: '<b>王五</b>' });
     });
+
+    it('白名单内模版默认开放给租户，关闭后租户端不可见、不可定制，平台代管不受影响', async () => {
+      const { mailSetting } = fastify.message.services;
+      const invite = await fastify.message.models.template.findOne({ where: { code: 'invite', type: 0, level: 0 } });
+      expect(invite.tenantOpen).to.equal(true);
+
+      await mailSetting.setTenantOpen({ id: invite.id, tenantOpen: false });
+      const { list } = await mailSetting.templateList({ tenantId: 'c1', type: 0 });
+      expect(list.map(item => item.code)).to.deep.equal(['remind']);
+      await expectHttpError(mailSetting.templateDetail({ tenantId: 'c1', code: 'invite' }), 404);
+      await expectHttpError(mailSetting.templateCustomize({ tenantId: 'c1', code: 'invite' }), 404);
+
+      const managed = await mailSetting.templateList({ tenantId: 'c1', type: 0, includeTenantClosed: true });
+      expect(managed.list.map(item => item.code)).to.deep.equal(['invite', 'remind']);
+      await mailSetting.templateCustomize({ tenantId: 'c1', code: 'invite', includeTenantClosed: true });
+
+      await mailSetting.setTenantOpen({ id: invite.id, tenantOpen: true });
+      expect((await mailSetting.templateList({ tenantId: 'c1', type: 0 })).list.map(item => item.code)).to.deep.equal(['invite', 'remind']);
+    });
+
+    it('只能设置白名单内的全局系统模版，平台模版列表标注 tenantCustomizable', async () => {
+      const { mailSetting } = fastify.message.services;
+      const register = await fastify.message.models.template.findOne({ where: { code: 'register', type: 0, level: 0 } });
+      await expectHttpError(mailSetting.setTenantOpen({ id: register.id, tenantOpen: false }), 403);
+      await expectHttpError(mailSetting.setTenantOpen({ id: '999999', tenantOpen: false }), 404);
+
+      const own = await mailSetting.templateCustomize({ tenantId: 'c1', code: 'remind' });
+      await expectHttpError(mailSetting.setTenantOpen({ id: own.id, tenantOpen: false }), 403);
+
+      const { pageData } = await fastify.message.services.template.list({ filter: { tenantId: '' } });
+      const marked = await mailSetting.withTenantCustomizable(pageData);
+      const flags = Object.fromEntries(marked.map(item => [`${item.code}:${item.type}`, item.tenantCustomizable]));
+      expect(flags).to.deep.equal({ 'invite:0': true, 'remind:0': true, 'register:0': false, 'invite:1': true });
+    });
   });
 
   describe('发送使用租户 SMTP', () => {

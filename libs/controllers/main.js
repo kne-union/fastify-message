@@ -34,6 +34,7 @@ const templateProperties = {
   variables: variablesSchema,
   extra: extraSchema,
   tenantId: { type: 'string', description: '所属租户，空字符串为全局模版' },
+  tenantOpen: { type: 'boolean', description: '系统模版是否开放给租户端定制' },
   createdAt: { type: 'string', description: '创建时间' },
   updatedAt: { type: 'string', description: '更新时间' }
 };
@@ -286,7 +287,9 @@ module.exports = fp(async (fastify, options) => {
                 items: {
                   type: 'object',
                   description: '消息模版',
-                  properties: templateProperties
+                  properties: Object.assign({}, templateProperties, {
+                    tenantCustomizable: { type: 'boolean', description: '是否在 mailSettingTemplateCodes 白名单内，可设置开放给租户' }
+                  })
                 }
               }
             }
@@ -304,7 +307,8 @@ module.exports = fp(async (fastify, options) => {
       if (level !== undefined) where.level = level;
       if (status !== undefined) where.status = status;
 
-      return await services.template.list({ filter: where, keyword, perPage: Math.min(perPage, 100), currentPage });
+      const result = await services.template.list({ filter: where, keyword, perPage: Math.min(perPage, 100), currentPage });
+      return Object.assign({}, result, { pageData: await services.mailSetting.withTenantCustomizable(result.pageData) });
     }
   );
 
@@ -440,6 +444,27 @@ module.exports = fp(async (fastify, options) => {
       }
     },
     async request => await services.template.setStatus({ id: request.params.id, status: request.body.status })
+  );
+
+  // 设置系统模版是否开放给租户端定制
+  fastify.post(
+    `${options.prefix}/templates/:id/tenant-open`,
+    {
+      onRequest: options.getAuthenticate('template:manage'),
+      schema: {
+        tags: [TEMPLATE_TAG],
+        summary: '设置模版是否开放给租户',
+        description: '只能设置 mailSettingTemplateCodes 白名单内的全局系统模版（否则 403）；关闭后租户端不可见、不可定制，平台代租户管理不受影响',
+        params: idParams,
+        body: {
+          type: 'object',
+          required: ['tenantOpen'],
+          properties: { tenantOpen: { type: 'boolean', description: '是否开放给租户' } }
+        },
+        response: templateResponse('修改后的消息模版')
+      }
+    },
+    async request => await services.mailSetting.setTenantOpen({ id: request.params.id, tenantOpen: request.body.tenantOpen })
   );
 
   // 复制模版

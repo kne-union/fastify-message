@@ -116,6 +116,7 @@ fastify.post('/client/mail-setting/smtp-save', { onRequest: [authenticate.user, 
 
 - SMTP 配置保存在 `t_message_tenant_email_config`，详情不回传密码（`hasPassword` 表示已设置），保存时密码为空则保留原密码
 - 模板定制：以系统邮件 / 短信模板（全局、启用、level 0，受 `mailSettingTemplateCodes` 限制）为底稿创建同编码同类型的租户模板，只可修改主题、正文与说明；停用或重置后恢复系统模板。`templateList` 可传 `codes` 按业务场景收窄
+- 开放范围：白名单内的系统模板默认开放给租户，平台可在消息模板管理中通过 `POST /templates/:id/tenant-open` 逐个关闭；关闭后租户端不可见，平台代租户管理时传 `includeTenantClosed: true` 不受限制
 
 模板目录中删除的文件，对应的系统模板会在下次启动时被停用（不删除，保留发送记录关联）；文件恢复后需在后台手动启用。
 

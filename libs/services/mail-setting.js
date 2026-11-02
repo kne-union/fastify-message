@@ -53,32 +53,45 @@ module.exports = fp(async (fastify, options) => {
     return Array.isArray(codes) ? codes : null;
   };
 
+  // 平台关闭了 tenantOpen 的模版租户端不可见；includeTenantClosed 供平台代租户管理时使用
+  const systemTemplateWhere = ({ type, includeTenantClosed }) =>
+    Object.assign({ type, level: 0, status: 0, tenantId: '' }, includeTenantClosed ? {} : { tenantOpen: { [Op.ne]: false } });
+
   // 可定制的系统模版：全局、启用、level 0，配置了 mailSettingTemplateCodes 时按白名单过滤，传 codes 时再取交集
-  const listSystemTemplates = async ({ tenantId, type, codes: scopeCodes }) => {
+  const listSystemTemplates = async ({ tenantId, type, codes: scopeCodes, includeTenantClosed }) => {
     const whitelist = await getTemplateCodes({ tenantId, type });
     const codes = [whitelist, Array.isArray(scopeCodes) ? scopeCodes : null].filter(Boolean).reduce((result, list) => (result ? result.filter(code => list.includes(code)) : list), null);
     return await models.template.findAll({
-      where: Object.assign({ type, level: 0, status: 0, tenantId: '' }, codes ? { code: { [Op.in]: codes } } : {}),
+      where: Object.assign(systemTemplateWhere({ type, includeTenantClosed }), codes ? { code: { [Op.in]: codes } } : {}),
       order: [['code', 'ASC']]
     });
   };
 
-  const getSystemTemplate = async ({ tenantId, code, type }) => {
+  const getSystemTemplate = async ({ tenantId, code, type, includeTenantClosed }) => {
     const codes = await getTemplateCodes({ tenantId, type });
     if (codes && !codes.includes(code)) {
       throw createHttpError(403, `模版 ${code} 不允许定制`);
     }
-    const tpl = await models.template.findOne({ where: { code, type, level: 0, status: 0, tenantId: '' } });
+    const tpl = await models.template.findOne({ where: Object.assign(systemTemplateWhere({ type, includeTenantClosed }), { code }) });
     if (!tpl) {
       throw createHttpError(404, '模版不存在');
     }
     return tpl;
   };
 
+  // 是否在 mailSettingTemplateCodes 白名单内的全局系统模版（平台端据此决定能否设置开放给租户）
+  const isTemplateCustomizable = async tpl => {
+    if (Number(tpl.level) !== 0 || tpl.tenantId || !TEMPLATE_TYPES.includes(Number(tpl.type))) {
+      return false;
+    }
+    const codes = await getTemplateCodes({ type: Number(tpl.type) });
+    return !codes || codes.includes(tpl.code);
+  };
+
   const findTenantTemplate = async ({ tenantId, code, type }) => await models.template.findOne({ where: { code, type, level: 1, tenantId } });
 
-  const getTenantTemplate = async ({ tenantId, code, type }) => {
-    await getSystemTemplate({ tenantId, code, type });
+  const getTenantTemplate = async ({ tenantId, code, type, includeTenantClosed }) => {
+    await getSystemTemplate({ tenantId, code, type, includeTenantClosed });
     const own = await findTenantTemplate({ tenantId, code, type });
     if (!own) {
       throw createHttpError(404, '模版尚未定制');
@@ -86,8 +99,8 @@ module.exports = fp(async (fastify, options) => {
     return own;
   };
 
-  const copySystemTemplate = async ({ tenantId, code, type, userId }) => {
-    const system = await getSystemTemplate({ tenantId, code, type });
+  const copySystemTemplate = async ({ tenantId, code, type, userId, includeTenantClosed }) => {
+    const system = await getSystemTemplate({ tenantId, code, type, includeTenantClosed });
     const copied = await services.template.copy({ id: system.id, tenantId, userId });
     await copied.update({ name: system.name, status: 0 });
     return copied;
@@ -150,12 +163,12 @@ module.exports = fp(async (fastify, options) => {
       },
 
       // 不传 type 时返回全部可定制类型（邮件在前、短信在后）；codes 用于宿主按场景进一步收窄
-      templateList: async ({ tenantId, type, codes }) => {
+      templateList: async ({ tenantId, type, codes, includeTenantClosed }) => {
         const tenantKey = requireTenantId(tenantId);
         const types = type === undefined || type === null || type === '' ? TEMPLATE_TYPES : [toTemplateType(type)];
         const list = [];
         for (const itemType of types) {
-          const systemTemplates = await listSystemTemplates({ tenantId: tenantKey, type: itemType, codes });
+          const systemTemplates = await listSystemTemplates({ tenantId: tenantKey, type: itemType, codes, includeTenantClosed });
           const ownList = systemTemplates.length ? await models.template.findAll({ where: { type: itemType, level: 1, tenantId: tenantKey, code: { [Op.in]: systemTemplates.map(item => item.code) } } }) : [];
           systemTemplates.forEach(tpl => {
             const own = ownList.find(item => item.code === tpl.code);
@@ -175,32 +188,33 @@ module.exports = fp(async (fastify, options) => {
         return { list };
       },
 
-      templateDetail: async ({ tenantId, code, type }) => {
+      templateDetail: async ({ tenantId, code, type, includeTenantClosed }) => {
         const tenantKey = requireTenantId(tenantId);
         const templateType = toTemplateType(type);
-        const system = await getSystemTemplate({ tenantId: tenantKey, code, type: templateType });
+        const system = await getSystemTemplate({ tenantId: tenantKey, code, type: templateType, includeTenantClosed });
         const own = await findTenantTemplate({ tenantId: tenantKey, code, type: templateType });
         return { customized: !!own, template: own || system };
       },
 
       // 以系统模版为底稿创建租户模版，保留编码与名称并直接启用（内容与系统模版一致，不影响发送）
-      templateCustomize: async ({ tenantId, code, type, userId }) => {
+      templateCustomize: async ({ tenantId, code, type, userId, includeTenantClosed }) => {
         const tenantKey = requireTenantId(tenantId);
         const templateType = toTemplateType(type);
+        await getSystemTemplate({ tenantId: tenantKey, code, type: templateType, includeTenantClosed });
         const own = await findTenantTemplate({ tenantId: tenantKey, code, type: templateType });
         if (own) {
           return own;
         }
-        return await copySystemTemplate({ tenantId: tenantKey, code, type: templateType, userId });
+        return await copySystemTemplate({ tenantId: tenantKey, code, type: templateType, userId, includeTenantClosed });
       },
 
       // 只允许修改主题、正文与说明，编码、类型、变量沿用系统模版；尚未定制时保存即创建租户模版，保存失败不留副本
-      templateSave: async ({ tenantId, code, type, subject, content, description, userId }) => {
+      templateSave: async ({ tenantId, code, type, subject, content, description, userId, includeTenantClosed }) => {
         const tenantKey = requireTenantId(tenantId);
         const templateType = toTemplateType(type);
-        await getSystemTemplate({ tenantId: tenantKey, code, type: templateType });
+        await getSystemTemplate({ tenantId: tenantKey, code, type: templateType, includeTenantClosed });
         const own = await findTenantTemplate({ tenantId: tenantKey, code, type: templateType });
-        const target = own || (await copySystemTemplate({ tenantId: tenantKey, code, type: templateType, userId }));
+        const target = own || (await copySystemTemplate({ tenantId: tenantKey, code, type: templateType, userId, includeTenantClosed }));
         try {
           return await services.template.save({ id: target.id, subject, content, description });
         } catch (e) {
@@ -211,26 +225,50 @@ module.exports = fp(async (fastify, options) => {
         }
       },
 
-      templateSetStatus: async ({ tenantId, code, type, status }) => {
-        const own = await getTenantTemplate({ tenantId: requireTenantId(tenantId), code, type: toTemplateType(type) });
+      templateSetStatus: async ({ tenantId, code, type, status, includeTenantClosed }) => {
+        const own = await getTenantTemplate({ tenantId: requireTenantId(tenantId), code, type: toTemplateType(type), includeTenantClosed });
         return await services.template.setStatus({ id: own.id, status });
       },
 
       // 删除租户模版，恢复使用系统模版
-      templateReset: async ({ tenantId, code, type }) => {
-        const own = await getTenantTemplate({ tenantId: requireTenantId(tenantId), code, type: toTemplateType(type) });
+      templateReset: async ({ tenantId, code, type, includeTenantClosed }) => {
+        const own = await getTenantTemplate({ tenantId: requireTenantId(tenantId), code, type: toTemplateType(type), includeTenantClosed });
         await services.template.remove({ id: own.id });
         return {};
       },
 
       // 传 template 时预览未保存的内容，变量定义沿用当前生效的模版
-      templatePreview: async ({ tenantId, code, type, template, props }) => {
+      templatePreview: async ({ tenantId, code, type, template, props, includeTenantClosed }) => {
         const tenantKey = requireTenantId(tenantId);
         const templateType = toTemplateType(type);
-        const system = await getSystemTemplate({ tenantId: tenantKey, code, type: templateType });
+        const system = await getSystemTemplate({ tenantId: tenantKey, code, type: templateType, includeTenantClosed });
         const current = (await findTenantTemplate({ tenantId: tenantKey, code, type: templateType })) || system;
         const target = template ? Object.assign({ type: templateType, variables: current.variables, extra: current.extra }, pick(template, ['subject', 'content'])) : current.get({ plain: true });
         return await services.template.render({ template: target, props });
+      },
+
+      // 平台端模版列表标注 tenantCustomizable：白名单内的全局系统模版才可设置是否开放给租户
+      withTenantCustomizable: async list => {
+        const result = [];
+        for (const tpl of list) {
+          const plain = typeof tpl.get === 'function' ? tpl.get({ plain: true }) : tpl;
+          result.push(Object.assign({}, plain, { tenantCustomizable: await isTemplateCustomizable(plain) }));
+        }
+        return result;
+      },
+
+      // 关闭后租户端不可见、不可定制；已定制的租户模版仍按原状态参与发送
+      setTenantOpen: async ({ id, tenantOpen }) => {
+        const tpl = await models.template.findByPk(id);
+        if (!tpl) {
+          throw createHttpError(404, '模版不存在');
+        }
+        if (!(await isTemplateCustomizable(tpl))) {
+          throw createHttpError(403, `模版 ${tpl.code} 不在可定制范围内`);
+        }
+        tpl.tenantOpen = !!tenantOpen;
+        await tpl.save();
+        return tpl;
       }
     }
   });
