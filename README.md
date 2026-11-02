@@ -28,6 +28,7 @@ fastify-message 是一个基于 Fastify 框架的消息管理插件，提供模�
 - 系统级（目录导入）和业务级（接口创建）模板分类；业务模板启用后覆盖同编码系统模板
 - 发送记录追踪（成功 / 失败 / 待发送及失败原因）与发送统计，失败记录可重发
 - 支持异步发送与失败重试，SMTP 连接池复用
+- 租户模板与租户 SMTP：`tenantId` 由宿主项目自定义，`services.mailSetting` 提供 SMTP 配置与模板定制
 - 兼容 PostgreSQL、MySQL、SQLite，启动时自动升级表结构
 
 #### 安装
@@ -54,7 +55,10 @@ fastify.register(require('@kne/fastify-message'), {
   },
   retry: { times: 2, delay: 1000 }, // 发送失败重试次数与间隔（毫秒），默认不重试
   // 可选：按租户返回 SMTP 配置 { host, port, secure, user, pass, fromName, fromAddress }，返回空时使用 emailConfig
-  getEmailConfig: async ({ tenantId }) => fastify.tenant.services.mail.resolveEmailConfig({ tenantId }),
+  // 不传时读取 services.mailSetting 保存的租户 SMTP 配置
+  getEmailConfig: async ({ tenantId }) => resolveEmailConfig({ tenantId }),
+  // 可选：services.mailSetting 允许租户定制的系统模板编码，也可以是 ({ tenantId, type }) => codes；不传时为全部系统邮件与短信模板
+  mailSettingTemplateCodes: ['welcome'],
   autoUpgrade: true, // 启动时自动补齐表字段与索引、迁移 1.x 模板，默认开启；关闭后需自行调用 services.upgradeSchema()
   isTest: false // 测试模式下不会真实发送邮件
 });
@@ -105,13 +109,27 @@ fastify.register(require('@kne/fastify-message'), {
 
 #### 租户模板与租户 SMTP
 
-模板带 `tenantId` 字段（空字符串为全局模板），唯一索引为 `code + type + level + tenantId`。
+`tenantId` 是由宿主项目定义的租户标识（字符串），可以是 fastify-tenant 的租户，也可以是业务自己的"客户"、"组织"等实体 id；插件不校验租户是否存在，也不依赖任何租户插件。模板带 `tenantId` 字段（空字符串为全局模板），唯一索引为 `code + type + level + tenantId`。
 
 - `sendMessage` 传 `tenantId` 时，先在该租户启用的模板中按上面的规则选择，没有再回退到全局模板；停用租户模板即恢复全局内容
-- 邮件发送时调用 `getEmailConfig({ tenantId })`，返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
+- 邮件发送时调用 `getEmailConfig({ tenantId })`（未配置时读取 `services.mailSetting` 保存的已启用配置），返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
 - 发送记录保存 `tenantId`，重发与启动补发同样使用租户模板和 SMTP
 - `template.copy({ id, tenantId })` 把全局模板复制为租户模板；模板列表接口不传 `filter[tenantId]` 时只返回全局模板
 - `verifyEmailConfig({ config, to })` 校验 SMTP 能否登录，传 `to` 时再发一封测试邮件
+
+#### 租户邮件设置（mailSetting）
+
+`services.mailSetting` 提供租户 SMTP 配置与系统邮件模板定制，接口契约与 `components-admin:Tenant@MailSetting` 一致。插件不注册路由，由宿主项目按自己的鉴权包装接口，并负责把当前请求映射为 `tenantId`：
+
+```javascript
+// 例：业务里的"客户"作为租户，客户管理员只能操作自己的客户
+fastify.post('/client/mail-setting/smtp-save', { onRequest: [authenticate.user, authenticate.clientAdmin] }, async request => {
+  return fastify.message.services.mailSetting.smtpSave(Object.assign({}, request.body, { tenantId: request.clientId }));
+});
+```
+
+- SMTP 配置保存在 `t_message_tenant_email_config`，详情不回传密码（`hasPassword` 表示已设置），保存时密码为空则保留原密码
+- 模板定制：以系统邮件 / 短信模板（全局、启用、level 0，受 `mailSettingTemplateCodes` 限制）为底稿创建同编码同类型的租户模板，只可修改主题、正文与说明；停用或重置后恢复系统模板。`templateList` 可传 `codes` 按业务场景收窄
 
 模板目录中删除的文件，对应的系统模板会在下次启动时被停用（不删除，保留发送记录关联）；文件恢复后需在后台手动启用。
 
@@ -738,7 +756,7 @@ const message = await fastify.message.services.messageTemplate({
 | props   | Object | 否  | {}  | 模板变量          |
 | code    | String | 是  | -   | 模板编码          |
 | level   | Number | 否  | -   | 模板级别，不传时业务模板优先 |
-| tenantId | String | 否 | -   | 租户ID：优先使用租户模板；邮件通过插件配置 `getEmailConfig` 取租户 SMTP，写入记录供重发使用 |
+| tenantId | String | 否 | -   | 租户ID（宿主项目自定义）：优先使用租户模板；邮件通过插件配置 `getEmailConfig`（未配置时为 `mailSetting` 保存的配置）取租户 SMTP，写入记录供重发使用 |
 | client  | Object | 否  | -   | 客户端配置（覆盖默认配置） |
 | options | Object | 否  | -   | 发送选项          |
 | userId  | String | 否  | -   | 发送人，写入记录      |
@@ -789,6 +807,27 @@ await fastify.message.services.sendMessage({
 | html    | String | 否  | 测试邮件正文 |
 
 返回 `{ success: true }`。
+
+##### mailSetting
+
+租户邮件设置，所有方法都必须传 `tenantId`（宿主项目自定义的租户标识，为空返回 400）。插件不注册对应路由，由宿主项目按自己的鉴权包装，接口契约与 `components-admin:Tenant@MailSetting` 一致。
+
+| 方法 | 参数 | 说明 |
+|----|----|----|
+| smtpDetail | `{ tenantId }` | 返回 `{ configured, enabled, hasPassword, host, port, secure, user, fromName, fromAddress }`，不回传密码；未配置时 `configured: false` |
+| smtpSave | `{ tenantId, enabled, host, port, secure, user, pass, fromName, fromAddress }` | 新建或更新，`pass` 为空时保留原密码；缺少 `host` / `user` 返回 400。启用状态（`enabled` 不为 `false`）下先用合并后的配置调用 `verifyEmailConfig`，连接未通过返回 400 且不保存；停用时不校验。返回同 `smtpDetail` |
+| smtpRemove | `{ tenantId }` | 删除配置，发送回退到全局 |
+| smtpTest | `{ tenantId, to, ...smtp }` | 用表单配置调用 `verifyEmailConfig`，未填密码时使用已保存的密码 |
+| templateList | `{ tenantId, type, codes }` | 返回 `{ list: [{ code, type, name, description, systemTemplateId, customized, templateId, status, updatedAt }] }`；`type` 为 0 邮件 / 1 短信，不传时返回两种类型（邮件在前）；传 `codes` 时只返回其中的编码，供宿主按业务场景收窄 |
+| templateDetail | `{ tenantId, code, type }` | 返回 `{ customized, template }`，未定制时 `template` 为系统模板 |
+| templateCustomize | `{ tenantId, code, type, userId }` | 以系统模板为底稿创建同编码的租户模板（启用），已定制时返回已有模板 |
+| templateSave | `{ tenantId, code, type, subject, content, description, userId }` | 修改租户模板；尚未定制时以系统模板为底稿创建后保存（保存失败不留副本），即「保存后才成为自定义模板」 |
+| templateSetStatus | `{ tenantId, code, type, status }` | 启用（0）/ 停用（1）租户模板，停用后使用系统模板 |
+| templateReset | `{ tenantId, code, type }` | 删除租户模板，恢复系统模板 |
+| templatePreview | `{ tenantId, code, type, template, props }` | 渲染当前生效模板；传 `template: { subject, content }` 时渲染未保存内容，返回同 `template.render` |
+| getEmailConfig | `{ tenantId }` | 返回已启用的租户 SMTP 配置（含密码）或 `null`，插件未配置 `getEmailConfig` 时发送使用此方法 |
+
+可定制的模板为全局、启用、`level = 0` 的邮件和短信模板；除 `templateList` 外，`type` 缺省为 0（邮件），其它值返回 400。配置了插件参数 `mailSettingTemplateCodes`（数组或 `({ tenantId, type }) => codes`）时只允许白名单内的编码，其它编码返回 403。
 
 ##### statistics.getOverview
 
@@ -999,3 +1038,19 @@ const result = await fastify.message.services.template.send({
 | tenantId   | String | -   | 所属租户，重发时使用租户模板与 SMTP |
 | createdAt  | Date   | -   | 创建时间 |
 | updatedAt  | Date   | -   | 更新时间 |
+
+##### TenantEmailConfig 模型
+
+表名 `t_message_tenant_email_config`，由 `services.mailSetting` 维护。
+
+| 字段          | 类型      | 默认值  | 描述 |
+|-------------|---------|------|----|
+| tenantId    | String  | -    | 租户标识（唯一） |
+| enabled     | Boolean | true | 是否启用，停用时发送回退到全局配置 |
+| host        | String  | -    | SMTP 服务器 |
+| port        | Number  | 465  | SMTP 端口 |
+| secure      | Boolean | true | 是否使用 SSL |
+| user        | String  | -    | SMTP 账号 |
+| pass        | String  | -    | SMTP 密码，接口不回传 |
+| fromName    | String  | -    | 发件人名称 |
+| fromAddress | String  | -    | 发件人地址，为空时使用 `user` |
