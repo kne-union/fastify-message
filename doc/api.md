@@ -273,6 +273,8 @@ eventSource.addEventListener('error', (event) => {
 | filter[tenantId] | String | 否 | -   | 所属租户，不传时只返回全局模版 |
 | filter[keyword] | String | 否  | -   | 按模版名称、编码模糊搜索（不区分大小写，`%`、`_` 按字面匹配） |
 
+每条模版额外返回 `tenantCustomizable`：是否为 `mailSettingTemplateCodes` 白名单内的全局系统模版，为 `true` 时可通过 `POST /templates/:id/tenant-open` 设置是否开放给租户。
+
 **响应示例**：
 
 ```json
@@ -293,6 +295,8 @@ eventSource.addEventListener('error', (event) => {
       "description": "注册成功后发送",
       "variables": [{ "name": "username", "label": "用户名", "example": "张三" }],
       "extra": {},
+      "tenantOpen": true,
+      "tenantCustomizable": true,
       "createdAt": "2026-05-12T10:00:00.000Z",
       "updatedAt": "2026-05-12T10:00:00.000Z"
     }
@@ -376,6 +380,20 @@ eventSource.addEventListener('error', (event) => {
 | 参数     | 类型     | 必填 | 描述           |
 |--------|--------|----|--------------|
 | status | Number | 是  | 0=启用，1=禁用    |
+
+---
+
+#### POST /templates/:id/tenant-open
+
+设置系统模版是否开放给租户端定制。只能设置白名单内的全局系统模版（`tenantCustomizable` 为 `true`），其它返回 403。关闭后租户端 `mailSetting` 不再返回、也不能定制该模版，已定制的租户模版仍按原状态参与发送；平台代租户管理（传 `includeTenantClosed`）不受影响。
+
+**权限类型**：`template:manage`
+
+**请求体**：
+
+| 参数         | 类型      | 必填 | 描述      |
+|------------|---------|----|---------|
+| tenantOpen | Boolean | 是  | 是否开放给租户 |
 
 ---
 
@@ -634,7 +652,7 @@ await fastify.message.services.sendMessage({
 | smtpSave | `{ tenantId, enabled, host, port, secure, user, pass, fromName, fromAddress }` | 新建或更新，`pass` 为空时保留原密码；缺少 `host` / `user` 返回 400。启用状态（`enabled` 不为 `false`）下先用合并后的配置调用 `verifyEmailConfig`，连接未通过返回 400 且不保存；停用时不校验。返回同 `smtpDetail` |
 | smtpRemove | `{ tenantId }` | 删除配置，发送回退到全局 |
 | smtpTest | `{ tenantId, to, ...smtp }` | 用表单配置调用 `verifyEmailConfig`，未填密码时使用已保存的密码 |
-| templateList | `{ tenantId, type, codes }` | 返回 `{ list: [{ code, type, name, description, systemTemplateId, customized, templateId, status, updatedAt }] }`；`type` 为 0 邮件 / 1 短信，不传时返回两种类型（邮件在前）；传 `codes` 时只返回其中的编码，供宿主按业务场景收窄 |
+| templateList | `{ tenantId, type, codes, includeTenantClosed }` | 返回 `{ list: [{ code, type, name, description, systemTemplateId, customized, templateId, status, updatedAt }] }`；`type` 为 0 邮件 / 1 短信，不传时返回两种类型（邮件在前）；传 `codes` 时只返回其中的编码，供宿主按业务场景收窄 |
 | templateDetail | `{ tenantId, code, type }` | 返回 `{ customized, template }`，未定制时 `template` 为系统模板 |
 | templateCustomize | `{ tenantId, code, type, userId }` | 以系统模板为底稿创建同编码的租户模板（启用），已定制时返回已有模板 |
 | templateSave | `{ tenantId, code, type, subject, content, description, userId }` | 修改租户模板；尚未定制时以系统模板为底稿创建后保存（保存失败不留副本），即「保存后才成为自定义模板」 |
@@ -643,7 +661,12 @@ await fastify.message.services.sendMessage({
 | templatePreview | `{ tenantId, code, type, template, props }` | 渲染当前生效模板；传 `template: { subject, content }` 时渲染未保存内容，返回同 `template.render` |
 | getEmailConfig | `{ tenantId }` | 返回已启用的租户 SMTP 配置（含密码）或 `null`，插件未配置 `getEmailConfig` 时发送使用此方法 |
 
-可定制的模板为全局、启用、`level = 0` 的邮件和短信模板；除 `templateList` 外，`type` 缺省为 0（邮件），其它值返回 400。配置了插件参数 `mailSettingTemplateCodes`（数组或 `({ tenantId, type }) => codes`）时只允许白名单内的编码，其它编码返回 403。
+| setTenantOpen | `{ id, tenantOpen }` | 设置系统模板是否开放给租户，同 `POST /templates/:id/tenant-open` |
+| withTenantCustomizable | `list` | 给模板列表逐条加上 `tenantCustomizable`，`GET /templates` 使用 |
+
+可定制的模板为全局、启用、`level = 0` 的邮件和短信模板；除 `templateList` 外，`type` 缺省为 0（邮件），其它值返回 400。配置了插件参数 `mailSettingTemplateCodes`（数组或 `({ tenantId, type }) => codes`，平台端判断 `tenantCustomizable` 时不传 `tenantId`）时只允许白名单内的编码，其它编码返回 403。
+
+模板的 `tenantOpen`（默认 `true`）为 `false` 时，`template*` 方法视为该模板不存在（列表不返回，其它方法返回 404）；平台代租户管理时传 `includeTenantClosed: true` 忽略该限制。租户端由宿主自行鉴权后调用，不要传 `includeTenantClosed`。
 
 #### statistics.getOverview
 
@@ -830,6 +853,7 @@ const result = await fastify.message.services.template.send({
 | level     | Number | 1   | 模板级别（0:系统，1:业务） |
 | status    | Number | 0   | 模板状态（0:启用） |
 | tenantId  | String | ''  | 所属租户，空字符串为全局模板 |
+| tenantOpen | Boolean | true | 系统模板是否开放给租户端定制（仍受 `mailSettingTemplateCodes` 限制） |
 | createdAt | Date   | -   | 创建时间       |
 | updatedAt | Date   | -   | 更新时间       |
 

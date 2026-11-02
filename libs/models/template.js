@@ -50,6 +50,11 @@ module.exports = ({ DataTypes, options }) => {
         allowNull: false,
         defaultValue: '',
         comment: '所属租户，空字符串为全局模版'
+      },
+      tenantOpen: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: true,
+        comment: '系统模版是否开放给租户端定制，仍受 mailSettingTemplateCodes 限制'
       }
     },
     associate: ({ template }) => {

@@ -336,6 +336,22 @@ describe('@kne/fastify-message 模板接口与权限', function () {
       expect(await fastify.message.models.template.count()).to.equal(1);
     });
 
+    it('should mark tenantCustomizable in list and set tenantOpen for system template', async () => {
+      const system = await fastify.message.models.template.create({ code: 'notice', type: 0, level: 0, name: '通知', subject: 's', content: 'c' });
+
+      const list = await fastify.inject({ method: 'GET', url: '/api/message/templates?filter[level]=0' });
+      const item = JSON.parse(list.body).pageData.find(tpl => tpl.id === String(system.id));
+      expect(item).to.include({ tenantOpen: true, tenantCustomizable: true });
+
+      const closed = await fastify.inject({ method: 'POST', url: `/api/message/templates/${system.id}/tenant-open`, payload: { tenantOpen: false } });
+      expect(closed.statusCode).to.equal(200);
+      expect(JSON.parse(closed.body).tenantOpen).to.equal(false);
+
+      const own = await fastify.message.models.template.create({ code: 'notice', type: 0, level: 1, name: '通知', subject: 's', content: 'c' });
+      const forbidden = await fastify.inject({ method: 'POST', url: `/api/message/templates/${own.id}/tenant-open`, payload: { tenantOpen: false } });
+      expect(forbidden.statusCode).to.equal(403);
+    });
+
     it('should return 400 for invalid syntax, 409 for duplicated code and 403 for system template', async () => {
       const invalid = await fastify.inject({
         method: 'POST',
