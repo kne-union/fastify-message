@@ -308,7 +308,7 @@ module.exports = fp(async (fastify, options) => {
       if (status !== undefined) where.status = status;
 
       const result = await services.template.list({ filter: where, keyword, perPage: Math.min(perPage, 100), currentPage });
-      return Object.assign({}, result, { pageData: await services.mailSetting.withTenantCustomizable(result.pageData) });
+      return Object.assign({}, result, { pageData: await services.tenantTemplate.withTenantCustomizable(result.pageData) });
     }
   );
 
@@ -464,7 +464,7 @@ module.exports = fp(async (fastify, options) => {
         response: templateResponse('修改后的消息模版')
       }
     },
-    async request => await services.mailSetting.setTenantOpen({ id: request.params.id, tenantOpen: request.body.tenantOpen })
+    async request => await services.tenantTemplate.setTenantOpen({ id: request.params.id, tenantOpen: request.body.tenantOpen })
   );
 
   // 复制模版
