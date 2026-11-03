@@ -385,7 +385,7 @@ eventSource.addEventListener('error', (event) => {
 
 #### POST /templates/:id/tenant-open
 
-设置系统模版是否开放给租户端定制。只能设置白名单内的全局系统模版（`tenantCustomizable` 为 `true`），其它返回 403。关闭后租户端 `mailSetting` 不再返回、也不能定制该模版，已定制的租户模版仍按原状态参与发送；平台代租户管理（传 `includeTenantClosed`）不受影响。
+设置系统模版是否开放给租户端定制。只能设置白名单内的全局系统模版（`tenantCustomizable` 为 `true`），其它返回 403。关闭后租户端（`tenantTemplate.list` / `get`）不再返回、也不能定制该模版，已定制的租户模版仍按原状态参与发送；平台代租户管理（传 `includeTenantClosed`）不受影响。
 
 **权限类型**：`template:manage`
 
@@ -590,7 +590,7 @@ const message = await fastify.message.services.messageTemplate({
 | props   | Object | 否  | {}  | 模板变量          |
 | code    | String | 是  | -   | 模板编码          |
 | level   | Number | 否  | -   | 模板级别，不传时业务模板优先 |
-| tenantId | String | 否 | -   | 租户ID（宿主项目自定义）：优先使用租户模板；邮件通过插件配置 `getEmailConfig`（未配置时为 `mailSetting` 保存的配置）取租户 SMTP，写入记录供重发使用 |
+| tenantId | String | 否 | -   | 租户ID（宿主项目自定义）：优先使用租户模板；邮件通过插件配置 `getEmailConfig` 取租户 SMTP，写入记录供重发使用 |
 | client  | Object | 否  | -   | 客户端配置（覆盖默认配置） |
 | options | Object | 否  | -   | 发送选项          |
 | userId  | String | 否  | -   | 发送人，写入记录      |
@@ -642,25 +642,15 @@ await fastify.message.services.sendMessage({
 
 返回 `{ success: true }`。
 
-#### mailSetting
+#### tenantTemplate
 
-租户邮件设置，所有方法都必须传 `tenantId`（宿主项目自定义的租户标识，为空返回 400）。插件不注册对应路由，由宿主项目按自己的鉴权包装，接口契约与 `components-admin:Tenant@MailSetting` 一致。
+系统模板开放给租户的范围：`mailSettingTemplateCodes` 白名单 ∩ 平台 `tenantOpen` 开关。租户 SMTP、租户模板定制与鉴权由 `@kne/fastify-tenant` 实现，这里只提供范围查询。
 
 | 方法 | 参数 | 说明 |
 |----|----|----|
-| smtpDetail | `{ tenantId }` | 返回 `{ configured, enabled, hasPassword, host, port, secure, user, fromName, fromAddress }`，不回传密码；未配置时 `configured: false` |
-| smtpSave | `{ tenantId, enabled, host, port, secure, user, pass, fromName, fromAddress }` | 新建或更新，`pass` 为空时保留原密码；缺少 `host` / `user` 返回 400。启用状态（`enabled` 不为 `false`）下先用合并后的配置调用 `verifyEmailConfig`，连接未通过返回 400 且不保存；停用时不校验。返回同 `smtpDetail` |
-| smtpRemove | `{ tenantId }` | 删除配置，发送回退到全局 |
-| smtpTest | `{ tenantId, to, ...smtp }` | 用表单配置调用 `verifyEmailConfig`，未填密码时使用已保存的密码 |
-| templateList | `{ tenantId, type, codes, includeTenantClosed }` | 返回 `{ list: [{ code, type, name, description, systemTemplateId, customized, templateId, status, updatedAt }] }`；`type` 为 0 邮件 / 1 短信，不传时返回两种类型（邮件在前）；传 `codes` 时只返回其中的编码，供宿主按业务场景收窄 |
-| templateDetail | `{ tenantId, code, type }` | 返回 `{ customized, template }`，未定制时 `template` 为系统模板 |
-| templateCustomize | `{ tenantId, code, type, userId }` | 以系统模板为底稿创建同编码的租户模板（启用），已定制时返回已有模板 |
-| templateSave | `{ tenantId, code, type, subject, content, description, userId }` | 修改租户模板；尚未定制时以系统模板为底稿创建后保存（保存失败不留副本），即「保存后才成为自定义模板」 |
-| templateSetStatus | `{ tenantId, code, type, status }` | 启用（0）/ 停用（1）租户模板，停用后使用系统模板 |
-| templateReset | `{ tenantId, code, type }` | 删除租户模板，恢复系统模板 |
-| templatePreview | `{ tenantId, code, type, template, props }` | 渲染当前生效模板；传 `template: { subject, content }` 时渲染未保存内容，返回同 `template.render` |
-| getEmailConfig | `{ tenantId }` | 返回已启用的租户 SMTP 配置（含密码）或 `null`，插件未配置 `getEmailConfig` 时发送使用此方法 |
-
+| list | `{ tenantId, type, includeTenantClosed }` | 可给该租户定制的系统模板（全局、启用、level 0），按 `code` 排序；`type` 为 0 邮件（默认）/ 1 短信，其它返回 400；`includeTenantClosed` 为 `true` 时忽略平台开关（平台代管） |
+| get | `{ tenantId, code, type, includeTenantClosed }` | 取单个可定制系统模板；不在白名单返回 403，不存在或未开放返回 404 |
+| isCustomizable | `template` | 是否为白名单内的全局系统模板 |
 | setTenantOpen | `{ id, tenantOpen }` | 设置系统模板是否开放给租户，同 `POST /templates/:id/tenant-open` |
 | withTenantCustomizable | `list` | 给模板列表逐条加上 `tenantCustomizable`，`GET /templates` 使用 |
 
@@ -879,18 +869,3 @@ const result = await fastify.message.services.template.send({
 | createdAt  | Date   | -   | 创建时间 |
 | updatedAt  | Date   | -   | 更新时间 |
 
-#### TenantEmailConfig 模型
-
-表名 `t_message_tenant_email_config`，由 `services.mailSetting` 维护。
-
-| 字段          | 类型      | 默认值  | 描述 |
-|-------------|---------|------|----|
-| tenantId    | String  | -    | 租户标识（唯一） |
-| enabled     | Boolean | true | 是否启用，停用时发送回退到全局配置 |
-| host        | String  | -    | SMTP 服务器 |
-| port        | Number  | 465  | SMTP 端口 |
-| secure      | Boolean | true | 是否使用 SSL |
-| user        | String  | -    | SMTP 账号 |
-| pass        | String  | -    | SMTP 密码，接口不回传 |
-| fromName    | String  | -    | 发件人名称 |
-| fromAddress | String  | -    | 发件人地址，为空时使用 `user` |

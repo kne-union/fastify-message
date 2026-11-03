@@ -14,7 +14,7 @@ fastify-message 是一个基于 Fastify 框架的消息管理插件，提供模�
 - 系统级（目录导入）和业务级（接口创建）模板分类；业务模板启用后覆盖同编码系统模板
 - 发送记录追踪（成功 / 失败 / 待发送及失败原因）与发送统计，失败记录可重发
 - 支持异步发送与失败重试，SMTP 连接池复用
-- 租户模板与租户 SMTP：`tenantId` 由宿主项目自定义，`services.mailSetting` 提供 SMTP 配置与模板定制
+- 租户模板与租户 SMTP：`tenantId` 由宿主项目自定义；`mailSettingTemplateCodes` 白名单 ∩ 平台开关决定哪些系统模板开放给租户定制，租户消息设置界面与 SMTP 由 fastify-tenant 实现
 - 兼容 PostgreSQL、MySQL、SQLite，启动时自动升级表结构
 
 ### 安装
@@ -41,9 +41,9 @@ fastify.register(require('@kne/fastify-message'), {
   },
   retry: { times: 2, delay: 1000 }, // 发送失败重试次数与间隔（毫秒），默认不重试
   // 可选：按租户返回 SMTP 配置 { host, port, secure, user, pass, fromName, fromAddress }，返回空时使用 emailConfig
-  // 不传时读取 services.mailSetting 保存的租户 SMTP 配置
-  getEmailConfig: async ({ tenantId }) => resolveEmailConfig({ tenantId }),
-  // 可选：services.mailSetting 允许租户定制的系统模板编码，也可以是 ({ tenantId, type }) => codes；不传时为全部系统邮件与短信模板
+  // 配合 fastify-tenant 时传 fastify.tenant.services.mail.resolveEmailConfig；不传时一律使用 emailConfig
+  getEmailConfig: async ({ tenantId }) => fastify.tenant.services.mail.resolveEmailConfig({ tenantId }),
+  // 可选：允许开放给租户定制的系统模板编码（白名单），也可以是 ({ tenantId, type }) => codes；不传时为全部系统邮件与短信模板
   mailSettingTemplateCodes: ['welcome'],
   autoUpgrade: true, // 启动时自动补齐表字段与索引、迁移 1.x 模板，默认开启；关闭后需自行调用 services.upgradeSchema()
   isTest: false // 测试模式下不会真实发送邮件
@@ -98,25 +98,18 @@ fastify.register(require('@kne/fastify-message'), {
 `tenantId` 是由宿主项目定义的租户标识（字符串），可以是 fastify-tenant 的租户，也可以是业务自己的"客户"、"组织"等实体 id；插件不校验租户是否存在，也不依赖任何租户插件。模板带 `tenantId` 字段（空字符串为全局模板），唯一索引为 `code + type + level + tenantId`。
 
 - `sendMessage` 传 `tenantId` 时，先在该租户启用的模板中按上面的规则选择，没有再回退到全局模板；停用租户模板即恢复全局内容
-- 邮件发送时调用 `getEmailConfig({ tenantId })`（未配置时读取 `services.mailSetting` 保存的已启用配置），返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
+- 邮件发送时调用插件配置的 `getEmailConfig({ tenantId })`，返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
 - 发送记录保存 `tenantId`，重发与启动补发同样使用租户模板和 SMTP
 - `template.copy({ id, tenantId })` 把全局模板复制为租户模板；模板列表接口不传 `filter[tenantId]` 时只返回全局模板
 - `verifyEmailConfig({ config, to })` 校验 SMTP 能否登录，传 `to` 时再发一封测试邮件
 
-### 租户邮件设置（mailSetting）
+### 租户模板开放范围（tenantTemplate）
 
-`services.mailSetting` 提供租户 SMTP 配置与系统邮件模板定制，接口契约与 `components-admin:Tenant@MailSetting` 一致。插件不注册路由，由宿主项目按自己的鉴权包装接口，并负责把当前请求映射为 `tenantId`：
+租户「消息设置」（SMTP、租户模板定制、权限）由 `@kne/fastify-tenant` 统一实现，本插件只决定哪些系统模板可以开放给租户：
 
-```javascript
-// 例：业务里的"客户"作为租户，客户管理员只能操作自己的客户
-fastify.post('/client/mail-setting/smtp-save', { onRequest: [authenticate.user, authenticate.clientAdmin] }, async request => {
-  return fastify.message.services.mailSetting.smtpSave(Object.assign({}, request.body, { tenantId: request.clientId }));
-});
-```
-
-- SMTP 配置保存在 `t_message_tenant_email_config`，详情不回传密码（`hasPassword` 表示已设置），保存时密码为空则保留原密码
-- 模板定制：以系统邮件 / 短信模板（全局、启用、level 0，受 `mailSettingTemplateCodes` 限制）为底稿创建同编码同类型的租户模板，只可修改主题、正文与说明；停用或重置后恢复系统模板。`templateList` 可传 `codes` 按业务场景收窄
-- 开放范围：白名单内的系统模板默认开放给租户，平台可在消息模板管理中通过 `POST /templates/:id/tenant-open` 逐个关闭；关闭后租户端不可见，平台代租户管理时传 `includeTenantClosed: true` 不受限制
+- 白名单：插件配置 `mailSettingTemplateCodes`，只有其中的全局系统模板（level 0）可以给租户定制，不传时为全部
+- 平台开关：白名单内的模板默认开放（`tenantOpen` 为 `true`），平台在消息模板管理中通过 `POST /templates/:id/tenant-open` 逐个关闭；`GET /templates` 每条返回 `tenantCustomizable` 标明能否设置
+- `services.tenantTemplate.list` / `get` 返回白名单 ∩ 已开放的系统模板，供 fastify-tenant 的租户端使用；平台代租户管理时传 `includeTenantClosed: true`，只受白名单限制
 
 模板目录中删除的文件，对应的系统模板会在下次启动时被停用（不删除，保留发送记录关联）；文件恢复后需在后台手动启用。
 
