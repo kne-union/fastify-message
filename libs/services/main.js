@@ -281,14 +281,13 @@ module.exports = fp(async (fastify, options) => {
     }
   });
 
-  // 租户 SMTP 配置：传了 options.getEmailConfig 就用宿主实现（如 fastify-tenant 的 services.mail.resolveEmailConfig），
-  // 否则用包内 services.mailSetting 存储的配置；返回空表示使用全局 emailConfig
+  // 租户 SMTP 配置统一由 services.mailSetting.getEmailConfig 提供：插件参数里有 getEmailConfig 时该方法内部走宿主实现
+  // （如 fastify-tenant 的 services.mail.resolveEmailConfig），没有时读包内存储；返回空表示使用全局 emailConfig
   const resolveTenantEmailConfig = async tenantId => {
     if (!tenantId) {
       return null;
     }
-    const getConfig = typeof options.getEmailConfig === 'function' ? options.getEmailConfig : services.mailSetting.getEmailConfig;
-    const config = await getConfig({ tenantId });
+    const config = await services.mailSetting.getEmailConfig({ tenantId });
     return config && config.host ? Object.assign({ port: 465, secure: true }, config) : null;
   };
 
@@ -372,7 +371,7 @@ module.exports = fp(async (fastify, options) => {
 
   // 发送失败在模块内处理（记日志、写失败记录、计入统计），不向业务抛错：返回发送记录，status 为 0 成功 / 1 失败 / 2 待发送
   // async 为 true 时先写入待发送记录并立即返回，后台发送；失败的记录可通过 record.retry 重发
-  // 传 tenantId 时优先使用该租户的模版和 SMTP 配置（options.getEmailConfig），没有再回退到全局
+  // 传 tenantId 时优先使用该租户的模版和 SMTP 配置（services.mailSetting.getEmailConfig），没有再回退到全局
   const sendMessage = async ({ type = 0, name, props = {}, code, level, tenantId, client, options: targetOptions, userId, async: isAsync = false }) => {
     targetOptions = Object.assign({}, targetOptions);
     const tenantKey = normalizeTenantId(tenantId);

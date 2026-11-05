@@ -590,7 +590,7 @@ const message = await fastify.message.services.messageTemplate({
 | props   | Object | 否  | {}  | 模板变量          |
 | code    | String | 是  | -   | 模板编码          |
 | level   | Number | 否  | -   | 模板级别，不传时业务模板优先 |
-| tenantId | String | 否 | -   | 租户ID（宿主项目自定义）：优先使用租户模板；邮件通过插件配置 `getEmailConfig` 取租户 SMTP，写入记录供重发使用 |
+| tenantId | String | 否 | -   | 租户ID（宿主项目自定义）：优先使用租户模板；邮件通过 `services.mailSetting.getEmailConfig` 取租户 SMTP（内置/外置由插件参数 `getEmailConfig` 决定），写入记录供重发使用 |
 | client  | Object | 否  | -   | 客户端配置（覆盖默认配置） |
 | options | Object | 否  | -   | 发送选项          |
 | userId  | String | 否  | -   | 发送人，写入记录      |
@@ -644,7 +644,7 @@ await fastify.message.services.sendMessage({
 
 #### tenantTemplate
 
-系统模板开放给租户的范围：`mailSettingTemplateCodes` 白名单 ∩ 平台 `tenantOpen` 开关。租户 SMTP、租户模板定制与鉴权由 `@kne/fastify-tenant` 实现，这里只提供范围查询。
+系统模板开放给租户的范围：`mailSettingTemplateCodes` 白名单 ∩ 平台 `tenantOpen` 开关。这里只提供范围查询，租户 SMTP 存储与租户模板副本的增删改查见 `mailSetting`（自带默认实现；接 `@kne/fastify-tenant` 时也可用它的实现，鉴权始终由宿主负责）。
 
 | 方法 | 参数 | 说明 |
 |----|----|----|
@@ -660,11 +660,11 @@ await fastify.message.services.sendMessage({
 
 #### mailSetting
 
-租户消息设置的包内默认实现（2.1.1 起）：租户 SMTP 配置存储 + 系统模板的租户定制。`services.mailSetting` 在任何配置下都存在；宿主传了 `getEmailConfig` 时，发送取值走宿主实现，包内 SMTP 存储不再参与发送（方法仍可正常调用）。
+租户消息设置的包内默认实现（2.1.1 起）：租户 SMTP 配置存储 + 系统模板的租户定制。`services.mailSetting` 的方法集合固定，任何插件参数下都完整挂载同一套方法，不会因为传了 `getEmailConfig` 而少挂某个方法；插件参数只影响发送取值：`getEmailConfig` 是唯一入口，传了宿主实现时由它内部转调（此时包内 SMTP 表不参与发送），没传时读包内表。
 
 | 方法 | 参数 | 说明 |
 |----|----|----|
-| getEmailConfig | `{ tenantId }` | 该租户启用的 SMTP 配置（含 `pass`，供发送使用）；未配置或停用返回 `null`，发送回退到全局 `emailConfig` |
+| getEmailConfig | `{ tenantId }` | 发送取值入口。传了插件参数 `getEmailConfig` 时原样返回宿主实现的结果，否则返回该租户启用的包内配置（含 `pass`）；未配置、停用或 `tenantId` 为空返回 `null`，发送回退到全局 `emailConfig` |
 | smtpDetail | `{ tenantId }` | 配置详情，不回传 `pass` 只给 `hasPassword`；未配置返回 `{ configured: false, enabled: false, port: 465, secure: true, hasPassword: false }` |
 | smtpSave | `{ tenantId, ...SMTP 字段 }` | 保存配置；`pass` 为空时保留原密码；`enabled !== false` 时先做连接测试，失败返回 400 且不落库 |
 | smtpRemove | `{ tenantId }` | 删除该租户配置 |

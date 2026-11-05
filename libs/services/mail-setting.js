@@ -10,10 +10,10 @@ const TEMPLATE_TYPES = [0, 1];
 
 // 租户消息设置：SMTP 配置与系统邮件模版的租户定制。
 // 模版可定制范围（白名单 + tenantOpen + level 0 + 启用）复用 services.tenantTemplate，这里只补 SMTP 存储与租户模版副本的增删改查。
-// 传了 options.getEmailConfig 时发送取值走宿主实现（如 fastify-tenant），本服务的 SMTP 存储不再参与发送。
+// 所有方法在任何插件参数下都按同一份结构挂载（不随 options 增删），参数只影响「发送时取哪份 SMTP」：传了 options.getEmailConfig
+// 就走宿主实现（如 fastify-tenant），没传就读包内表 t_message_tenant_email_config。
 module.exports = fp(async (fastify, options) => {
   const { models, services } = fastify[options.name];
-  const { Op } = models.template.sequelize.Sequelize;
 
   const requireTenantId = tenantId => {
     if (tenantId === undefined || tenantId === null || tenantId === '') {
@@ -43,11 +43,21 @@ module.exports = fp(async (fastify, options) => {
 
   const findSmtp = async tenantId => await models.tenantEmailConfig.findOne({ where: { tenantId: requireTenantId(tenantId) } });
 
-  // 未传 options.getEmailConfig 时发送使用的默认实现：读取该租户已启用的配置
-  const getEmailConfig = async ({ tenantId }) => {
+  // 包内默认实现：读取该租户已启用的配置
+  const getBuiltinEmailConfig = async ({ tenantId }) => {
     if (!tenantId) return null;
     const config = await models.tenantEmailConfig.findOne({ where: { tenantId: String(tenantId), enabled: true } });
     return config ? pick(config.get({ plain: true }), SMTP_FIELDS) : null;
+  };
+
+  // 宿主实现只在注册时取一次，之后不再看 options：发送取值统一走 services.mailSetting.getEmailConfig
+  const getExternalEmailConfig = typeof options.getEmailConfig === 'function' ? options.getEmailConfig : null;
+
+  const getEmailConfig = async ({ tenantId } = {}) => {
+    if (tenantId === undefined || tenantId === null || tenantId === '') {
+      return null;
+    }
+    return getExternalEmailConfig ? await getExternalEmailConfig({ tenantId }) : await getBuiltinEmailConfig({ tenantId });
   };
 
   // tenantTemplate 由另一个服务注册，调用发生在 ready 之后，惰性获取
@@ -135,6 +145,7 @@ module.exports = fp(async (fastify, options) => {
 
       // 不传 type 时返回全部可定制类型（邮件在前、短信在后）；codes 用于宿主按场景进一步收窄
       templateList: async ({ tenantId, type, codes, includeTenantClosed }) => {
+        const { Op } = models.template.sequelize.Sequelize;
         const tenantKey = requireTenantId(tenantId);
         const types = type === undefined || type === null || type === '' ? TEMPLATE_TYPES : [toTemplateType(type)];
         const list = [];

@@ -14,7 +14,7 @@ fastify-message 是一个基于 Fastify 框架的消息管理插件，提供模�
 - 系统级（目录导入）和业务级（接口创建）模板分类；业务模板启用后覆盖同编码系统模板
 - 发送记录追踪（成功 / 失败 / 待发送及失败原因）与发送统计，失败记录可重发
 - 支持异步发送与失败重试，SMTP 连接池复用
-- 租户模板与租户 SMTP：`tenantId` 由宿主项目自定义；`mailSettingTemplateCodes` 白名单 ∩ 平台开关决定哪些系统模板开放给租户定制；`services.mailSetting` 自带 SMTP 存储与租户模板定制，传 `getEmailConfig` 时改用宿主实现（如 fastify-tenant）
+- 租户模板与租户 SMTP：`tenantId` 由宿主项目自定义；`mailSettingTemplateCodes` 白名单 ∩ 平台开关决定哪些系统模板开放给租户定制；`services.mailSetting` 自带 SMTP 存储与租户模板定制，方法集合固定挂载、不随插件参数增删，只有发送取值会随 `getEmailConfig` 改用宿主实现（如 fastify-tenant）
 - 兼容 PostgreSQL、MySQL、SQLite，启动时自动升级表结构
 
 ### 安装
@@ -98,7 +98,7 @@ fastify.register(require('@kne/fastify-message'), {
 `tenantId` 是由宿主项目定义的租户标识（字符串），可以是 fastify-tenant 的租户，也可以是业务自己的"客户"、"组织"等实体 id；插件不校验租户是否存在，也不依赖任何租户插件。模板带 `tenantId` 字段（空字符串为全局模板），唯一索引为 `code + type + level + tenantId`。
 
 - `sendMessage` 传 `tenantId` 时，先在该租户启用的模板中按上面的规则选择，没有再回退到全局模板；停用租户模板即恢复全局内容
-- 邮件发送时调用插件配置的 `getEmailConfig({ tenantId })`，返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`；未配置 `getEmailConfig` 时用包内 `services.mailSetting` 存储的租户配置
+- 邮件发送时统一调用 `services.mailSetting.getEmailConfig({ tenantId })`：传了插件配置 `getEmailConfig` 时内部转调宿主实现，没传时读包内 `t_message_tenant_email_config`；返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
 - 发送记录保存 `tenantId`，重发与启动补发同样使用租户模板和 SMTP
 - `template.copy({ id, tenantId })` 把全局模板复制为租户模板；模板列表接口不传 `filter[tenantId]` 时只返回全局模板
 - `verifyEmailConfig({ config, to })` 校验 SMTP 能否登录，传 `to` 时再发一封测试邮件
@@ -108,8 +108,9 @@ fastify.register(require('@kne/fastify-message'), {
 插件自带租户消息设置的默认实现（2.1.1 起），开箱即用；用 `@kne/fastify-tenant` 时可继续用它的实现，两者通过 `getEmailConfig` 切换：
 
 - **内置**：不传 `getEmailConfig` 时，`services.mailSetting` 用内置表 `t_message_tenant_email_config` 存租户 SMTP，并提供 `smtpDetail` / `smtpSave` / `smtpRemove` / `smtpTest` 与 `templateList` / `templateDetail` / `templateCustomize` / `templateSave` / `templateSetStatus` / `templateReset` / `templatePreview`；发送时自动读取该租户已启用的配置
-- **外置**：传了 `getEmailConfig`（如 `fastify.tenant.services.mail.resolveEmailConfig`）时，发送取值走宿主实现，内置表不再参与发送；`services.mailSetting` 在任何配置下都存在，宿主未接管的方法仍可正常调用
-- 只按 `getEmailConfig` 有无判断，没有额外开关；租户鉴权与租户是否存在由宿主项目负责，插件只要求 `tenantId` 非空
+- **外置**：传了 `getEmailConfig`（如 `fastify.tenant.services.mail.resolveEmailConfig`）时，`services.mailSetting.getEmailConfig` 内部转调宿主实现，内置表不再参与发送；其余方法读写内置表，行为不变
+- 方法集合固定：`services.mailSetting` 在任何插件参数下都完整挂载同一套方法（含 `getEmailConfig` / `smtpSave` / `smtpRemove` / `smtpTest` 与全部 `template*`），增删参数不会让某个方法变成 `undefined`
+- 只按 `getEmailConfig` 有无决定发送取值来源，没有额外开关；租户鉴权与租户是否存在由宿主项目负责，插件只要求 `tenantId` 非空
 
 ### 租户模板开放范围（tenantTemplate）
 

@@ -309,6 +309,8 @@ describe('@kne/fastify-message 租户邮件设置 mailSetting', function () {
         // 包内 SMTP 存储仍可读写，但不参与发送
         await services.mailSetting.smtpSave({ tenantId: 'c1', host: 'smtp.local.com', user: 'u', pass: 'p' });
         expect(await services.mailSetting.smtpDetail({ tenantId: 'c1' })).to.include({ configured: true, host: 'smtp.local.com' });
+        // 读取入口只有一个：getEmailConfig 内部走宿主实现，包内表不参与发送取值
+        expect(await services.mailSetting.getEmailConfig({ tenantId: 'c1' })).to.include({ host: 'smtp.external.com' });
         external.length = 0;
         const receivedBefore = received.length;
         expect((await services.sendMessage({ code: 'hello', type: 0, name: 'a@b.com', tenantId: 'c1' })).status).to.equal(0);
@@ -317,6 +319,60 @@ describe('@kne/fastify-message 租户邮件设置 mailSetting', function () {
         expect(received).to.have.length(receivedBefore);
       } finally {
         await fastify.close();
+      }
+    });
+
+    it('getEmailConfig 返回值不受包内存储影响，未开配置的租户返回空回退全局', async () => {
+      const fastify = await createFastify({
+        isTest: false,
+        emailConfig: { user: 'global@example.com' },
+        senders: { 0: async () => {} },
+        getEmailConfig: async ({ tenantId }) => (tenantId === 'c1' ? { host: 'smtp.external.com', user: 'u@ext.com', pass: 'p' } : null)
+      });
+      try {
+        const { services } = fastify.message;
+        await services.mailSetting.smtpSave({ tenantId: 'c1', host: 'smtp.local.com', user: 'u', pass: 'p' });
+        await services.mailSetting.smtpSave({ tenantId: 'c2', host: 'smtp.local.com', user: 'u', pass: 'p' });
+
+        expect(await services.mailSetting.getEmailConfig({ tenantId: 'c1' })).to.include({ host: 'smtp.external.com' });
+        expect(await services.mailSetting.getEmailConfig({ tenantId: 'c2' })).to.equal(null);
+        // 不传 tenantId 时与包内实现一致，直接返回空
+        expect(await services.mailSetting.getEmailConfig({})).to.equal(null);
+      } finally {
+        await fastify.close();
+      }
+    });
+
+    it('mailSetting 的方法在任何插件参数下都完整挂载，结构不随 getEmailConfig 变化', async () => {
+      const methods = [
+        'getEmailConfig',
+        'smtpDetail',
+        'smtpSave',
+        'smtpRemove',
+        'smtpTest',
+        'templateList',
+        'templateDetail',
+        'templateCustomize',
+        'templateSave',
+        'templateSetStatus',
+        'templateReset',
+        'templatePreview',
+        'withTenantCustomizable',
+        'setTenantOpen'
+      ];
+
+      const builtinFastify = await createFastify();
+      const externalFastify = await createFastify({ getEmailConfig: async () => null });
+      try {
+        for (const fastify of [builtinFastify, externalFastify]) {
+          const { mailSetting } = fastify.message.services;
+          expect(mailSetting).to.be.an('object');
+          expect(Object.keys(mailSetting).sort()).to.deep.equal([...methods].sort());
+          methods.forEach(method => expect(mailSetting[method], method).to.be.a('function'));
+        }
+      } finally {
+        await builtinFastify.close();
+        await externalFastify.close();
       }
     });
   });
