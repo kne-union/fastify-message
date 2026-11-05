@@ -281,12 +281,14 @@ module.exports = fp(async (fastify, options) => {
     }
   });
 
-  // 租户 SMTP 配置由 options.getEmailConfig 提供（如 fastify-tenant 的 services.mail.resolveEmailConfig）；返回空表示使用全局 emailConfig
+  // 租户 SMTP 配置：传了 options.getEmailConfig 就用宿主实现（如 fastify-tenant 的 services.mail.resolveEmailConfig），
+  // 否则用包内 services.mailSetting 存储的配置；返回空表示使用全局 emailConfig
   const resolveTenantEmailConfig = async tenantId => {
-    if (!tenantId || typeof options.getEmailConfig !== 'function') {
+    if (!tenantId) {
       return null;
     }
-    const config = await options.getEmailConfig({ tenantId });
+    const getConfig = typeof options.getEmailConfig === 'function' ? options.getEmailConfig : services.mailSetting.getEmailConfig;
+    const config = await getConfig({ tenantId });
     return config && config.host ? Object.assign({ port: 465, secure: true }, config) : null;
   };
 

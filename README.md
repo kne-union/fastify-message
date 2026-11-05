@@ -28,7 +28,7 @@ fastify-message 是一个基于 Fastify 框架的消息管理插件，提供模�
 - 系统级（目录导入）和业务级（接口创建）模板分类；业务模板启用后覆盖同编码系统模板
 - 发送记录追踪（成功 / 失败 / 待发送及失败原因）与发送统计，失败记录可重发
 - 支持异步发送与失败重试，SMTP 连接池复用
-- 租户模板与租户 SMTP：`tenantId` 由宿主项目自定义；`mailSettingTemplateCodes` 白名单 ∩ 平台开关决定哪些系统模板开放给租户定制，租户消息设置界面与 SMTP 由 fastify-tenant 实现
+- 租户模板与租户 SMTP：`tenantId` 由宿主项目自定义；`mailSettingTemplateCodes` 白名单 ∩ 平台开关决定哪些系统模板开放给租户定制；`services.mailSetting` 自带 SMTP 存储与租户模板定制，传 `getEmailConfig` 时改用宿主实现（如 fastify-tenant）
 - 兼容 PostgreSQL、MySQL、SQLite，启动时自动升级表结构
 
 #### 安装
@@ -55,7 +55,8 @@ fastify.register(require('@kne/fastify-message'), {
   },
   retry: { times: 2, delay: 1000 }, // 发送失败重试次数与间隔（毫秒），默认不重试
   // 可选：按租户返回 SMTP 配置 { host, port, secure, user, pass, fromName, fromAddress }，返回空时使用 emailConfig
-  // 配合 fastify-tenant 时传 fastify.tenant.services.mail.resolveEmailConfig；不传时一律使用 emailConfig
+  // 不传时使用 services.mailSetting 存储的租户配置（表 t_message_tenant_email_config）；传了则发送取值走这里
+  // 配合 fastify-tenant 时传 fastify.tenant.services.mail.resolveEmailConfig
   getEmailConfig: async ({ tenantId }) => fastify.tenant.services.mail.resolveEmailConfig({ tenantId }),
   // 可选：允许开放给租户定制的系统模板编码（白名单），也可以是 ({ tenantId, type }) => codes；不传时为全部系统邮件与短信模板
   mailSettingTemplateCodes: ['welcome'],

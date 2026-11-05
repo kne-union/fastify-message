@@ -658,6 +658,31 @@ await fastify.message.services.sendMessage({
 
 模板的 `tenantOpen`（默认 `true`）为 `false` 时，`template*` 方法视为该模板不存在（列表不返回，其它方法返回 404）；平台代租户管理时传 `includeTenantClosed: true` 忽略该限制。租户端由宿主自行鉴权后调用，不要传 `includeTenantClosed`。
 
+#### mailSetting
+
+租户消息设置的包内默认实现（2.1.1 起）：租户 SMTP 配置存储 + 系统模板的租户定制。`services.mailSetting` 在任何配置下都存在；宿主传了 `getEmailConfig` 时，发送取值走宿主实现，包内 SMTP 存储不再参与发送（方法仍可正常调用）。
+
+| 方法 | 参数 | 说明 |
+|----|----|----|
+| getEmailConfig | `{ tenantId }` | 该租户启用的 SMTP 配置（含 `pass`，供发送使用）；未配置或停用返回 `null`，发送回退到全局 `emailConfig` |
+| smtpDetail | `{ tenantId }` | 配置详情，不回传 `pass` 只给 `hasPassword`；未配置返回 `{ configured: false, enabled: false, port: 465, secure: true, hasPassword: false }` |
+| smtpSave | `{ tenantId, ...SMTP 字段 }` | 保存配置；`pass` 为空时保留原密码；`enabled !== false` 时先做连接测试，失败返回 400 且不落库 |
+| smtpRemove | `{ tenantId }` | 删除该租户配置 |
+| smtpTest | `{ tenantId, to, ...SMTP 字段 }` | 用已保存密码合并后连接测试，传 `to` 时再发一封测试邮件 |
+| templateList | `{ tenantId, type, codes, includeTenantClosed }` | 可定制模板列表并标注租户定制状态；不传 `type` 时邮件在前、短信在后；`codes` 在可定制范围内再取交集 |
+| templateDetail | `{ tenantId, code, type, includeTenantClosed }` | `{ customized, template }`，未定制时返回系统模板 |
+| templateCustomize | `{ tenantId, code, type, userId, includeTenantClosed }` | 以系统模板为底稿创建租户副本，保留编码与名称并直接启用；已定制则直接返回 |
+| templateSave | `{ tenantId, code, type, subject, content, description, userId, includeTenantClosed }` | 只改主题、正文与说明；未定制时保存即创建副本，校验失败不留副本 |
+| templateSetStatus | `{ tenantId, code, type, status, includeTenantClosed }` | 启停租户副本；未定制返回 404 |
+| templateReset | `{ tenantId, code, type, includeTenantClosed }` | 删除租户副本，恢复使用系统模板；未定制返回 404 |
+| templatePreview | `{ tenantId, code, type, template, props, includeTenantClosed }` | 传 `template` 时渲染未保存内容，变量定义沿用当前生效模板 |
+| withTenantCustomizable | `list` | 2.0.x 兼容入口，等同于 `tenantTemplate.withTenantCustomizable` |
+| setTenantOpen | `{ id, tenantOpen }` | 2.0.x 兼容入口，等同于 `tenantTemplate.setTenantOpen` |
+
+`tenantId` 必填，为空返回 400（统一转成字符串落库，避免数字与字符串产生两份配置）。
+
+可定制范围（白名单 ∩ `tenantOpen` ∩ `level = 0` ∩ 启用）复用 `tenantTemplate`，`mailSetting` 只在其之上维护租户副本（`level = 1` + `tenantId`）。租户副本启用后，`messageTemplate` 与发送只覆盖该租户，其它租户与全局不受影响。
+
 #### statistics.getOverview
 
 获取消息统计数据概览。
@@ -848,6 +873,27 @@ const result = await fastify.message.services.template.send({
 | updatedAt | Date   | -   | 更新时间       |
 
 索引：`code + type + level + tenantId` 唯一。
+
+#### TenantEmailConfig 模型
+
+租户 SMTP 配置，表名 `t_message_tenant_email_config`（`paranoid: false`）。
+
+| 字段          | 类型      | 默认值  | 描述                        |
+|-------------|---------|------|---------------------------|
+| id          | Number  | -    | 主键                        |
+| tenantId    | String  | -    | 租户标识，由宿主项目定义（如客户 id）     |
+| enabled     | Boolean | true | 是否启用，停用时发送回退到全局配置        |
+| host        | String  | -    | SMTP 服务器                  |
+| port        | Number  | 465  | SMTP 端口                   |
+| secure      | Boolean | true | 是否使用 SSL                 |
+| user        | String  | -    | SMTP 账号                   |
+| pass        | String  | -    | SMTP 密码，接口不回传            |
+| fromName    | String  | -    | 发件人名称                     |
+| fromAddress | String  | -    | 发件人地址，为空时使用 SMTP 账号      |
+| createdAt   | Date    | -    | 创建时间                      |
+| updatedAt   | Date    | -    | 更新时间                      |
+
+索引：`tenantId` 唯一。
 
 #### Record 模型
 
