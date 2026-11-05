@@ -14,7 +14,7 @@ fastify-message 是一个基于 Fastify 框架的消息管理插件，提供模�
 - 系统级（目录导入）和业务级（接口创建）模板分类；业务模板启用后覆盖同编码系统模板
 - 发送记录追踪（成功 / 失败 / 待发送及失败原因）与发送统计，失败记录可重发
 - 支持异步发送与失败重试，SMTP 连接池复用
-- 租户模板与租户 SMTP：`tenantId` 由宿主项目自定义；`mailSettingTemplateCodes` 白名单 ∩ 平台开关决定哪些系统模板开放给租户定制，租户消息设置界面与 SMTP 由 fastify-tenant 实现
+- 租户模板与租户 SMTP：`tenantId` 由宿主项目自定义；`mailSettingTemplateCodes` 白名单 ∩ 平台开关决定哪些系统模板开放给租户定制；`services.mailSetting` 自带 SMTP 存储与租户模板定制，方法集合固定挂载、不随插件参数增删，只有发送取值会随 `getEmailConfig` 改用宿主实现（如 fastify-tenant）
 - 兼容 PostgreSQL、MySQL、SQLite，启动时自动升级表结构
 
 ### 安装
@@ -41,7 +41,7 @@ fastify.register(require('@kne/fastify-message'), {
   },
   retry: { times: 2, delay: 1000 }, // 发送失败重试次数与间隔（毫秒），默认不重试
   // 可选：按租户返回 SMTP 配置 { host, port, secure, user, pass, fromName, fromAddress }，返回空时使用 emailConfig
-  // 配合 fastify-tenant 时传 fastify.tenant.services.mail.resolveEmailConfig；不传时一律使用 emailConfig
+  // 配合 fastify-tenant 时传 fastify.tenant.services.mail.resolveEmailConfig；不传时由 services.mailSetting 读包内表 t_message_tenant_email_config（mailSetting 的方法始终完整挂载）
   getEmailConfig: async ({ tenantId }) => fastify.tenant.services.mail.resolveEmailConfig({ tenantId }),
   // 可选：允许开放给租户定制的系统模板编码（白名单），也可以是 ({ tenantId, type }) => codes；不传时为全部系统邮件与短信模板
   mailSettingTemplateCodes: ['welcome'],
@@ -98,14 +98,23 @@ fastify.register(require('@kne/fastify-message'), {
 `tenantId` 是由宿主项目定义的租户标识（字符串），可以是 fastify-tenant 的租户，也可以是业务自己的"客户"、"组织"等实体 id；插件不校验租户是否存在，也不依赖任何租户插件。模板带 `tenantId` 字段（空字符串为全局模板），唯一索引为 `code + type + level + tenantId`。
 
 - `sendMessage` 传 `tenantId` 时，先在该租户启用的模板中按上面的规则选择，没有再回退到全局模板；停用租户模板即恢复全局内容
-- 邮件发送时调用插件配置的 `getEmailConfig({ tenantId })`，返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
+- 邮件发送时统一调用 `services.mailSetting.getEmailConfig({ tenantId })`：传了插件配置 `getEmailConfig` 时内部转调宿主实现，没传时读包内 `t_message_tenant_email_config`；返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
 - 发送记录保存 `tenantId`，重发与启动补发同样使用租户模板和 SMTP
 - `template.copy({ id, tenantId })` 把全局模板复制为租户模板；模板列表接口不传 `filter[tenantId]` 时只返回全局模板
 - `verifyEmailConfig({ config, to })` 校验 SMTP 能否登录，传 `to` 时再发一封测试邮件
 
+### 租户消息设置（mailSetting）
+
+插件自带租户消息设置的默认实现（2.1.1 起），开箱即用；用 `@kne/fastify-tenant` 时可继续用它的实现，两者通过 `getEmailConfig` 切换：
+
+- **内置**：不传 `getEmailConfig` 时，`services.mailSetting` 用内置表 `t_message_tenant_email_config` 存租户 SMTP，并提供 `smtpDetail` / `smtpSave` / `smtpRemove` / `smtpTest` 与 `templateList` / `templateDetail` / `templateCustomize` / `templateSave` / `templateSetStatus` / `templateReset` / `templatePreview`；发送时自动读取该租户已启用的配置
+- **外置**：传了 `getEmailConfig`（如 `fastify.tenant.services.mail.resolveEmailConfig`）时，`services.mailSetting.getEmailConfig` 内部转调宿主实现，内置表不再参与发送；其余方法读写内置表，行为不变
+- 方法集合固定：`services.mailSetting` 在任何插件参数下都完整挂载同一套方法（含 `getEmailConfig` / `smtpSave` / `smtpRemove` / `smtpTest` 与全部 `template*`），增删参数不会让某个方法变成 `undefined`
+- 只按 `getEmailConfig` 有无决定发送取值来源，没有额外开关；租户鉴权与租户是否存在由宿主项目负责，插件只要求 `tenantId` 非空
+
 ### 租户模板开放范围（tenantTemplate）
 
-租户「消息设置」（SMTP、租户模板定制、权限）由 `@kne/fastify-tenant` 统一实现，本插件只决定哪些系统模板可以开放给租户：
+系统模板可给租户定制的范围（白名单 ∩ 平台开关），`mailSetting` 的模板方法复用同一份判断：
 
 - 白名单：插件配置 `mailSettingTemplateCodes`，只有其中的全局系统模板（level 0）可以给租户定制，不传时为全部
 - 平台开关：白名单内的模板默认开放（`tenantOpen` 为 `true`），平台在消息模板管理中通过 `POST /templates/:id/tenant-open` 逐个关闭；`GET /templates` 每条返回 `tenantCustomizable` 标明能否设置
