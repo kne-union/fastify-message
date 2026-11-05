@@ -41,7 +41,7 @@ fastify.register(require('@kne/fastify-message'), {
   },
   retry: { times: 2, delay: 1000 }, // 发送失败重试次数与间隔（毫秒），默认不重试
   // 可选：按租户返回 SMTP 配置 { host, port, secure, user, pass, fromName, fromAddress }，返回空时使用 emailConfig
-  // 配合 fastify-tenant 时传 fastify.tenant.services.mail.resolveEmailConfig；不传时一律使用 emailConfig
+  // 配合 fastify-tenant 时传 fastify.tenant.services.mail.resolveEmailConfig；不传时由 services.mailSetting 读包内表 t_message_tenant_email_config（mailSetting 的方法始终完整挂载）
   getEmailConfig: async ({ tenantId }) => fastify.tenant.services.mail.resolveEmailConfig({ tenantId }),
   // 可选：允许开放给租户定制的系统模板编码（白名单），也可以是 ({ tenantId, type }) => codes；不传时为全部系统邮件与短信模板
   mailSettingTemplateCodes: ['welcome'],

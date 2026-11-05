@@ -55,8 +55,7 @@ fastify.register(require('@kne/fastify-message'), {
   },
   retry: { times: 2, delay: 1000 }, // 发送失败重试次数与间隔（毫秒），默认不重试
   // 可选：按租户返回 SMTP 配置 { host, port, secure, user, pass, fromName, fromAddress }，返回空时使用 emailConfig
-  // 不传时 services.mailSetting.getEmailConfig 读包内表 t_message_tenant_email_config；传了则由它内部转调这里（mailSetting 方法仍完整挂载）
-  // 配合 fastify-tenant 时传 fastify.tenant.services.mail.resolveEmailConfig
+  // 配合 fastify-tenant 时传 fastify.tenant.services.mail.resolveEmailConfig；不传时由 services.mailSetting 读包内表 t_message_tenant_email_config（mailSetting 的方法始终完整挂载）
   getEmailConfig: async ({ tenantId }) => fastify.tenant.services.mail.resolveEmailConfig({ tenantId }),
   // 可选：允许开放给租户定制的系统模板编码（白名单），也可以是 ({ tenantId, type }) => codes；不传时为全部系统邮件与短信模板
   mailSettingTemplateCodes: ['welcome'],
@@ -113,14 +112,23 @@ fastify.register(require('@kne/fastify-message'), {
 `tenantId` 是由宿主项目定义的租户标识（字符串），可以是 fastify-tenant 的租户，也可以是业务自己的"客户"、"组织"等实体 id；插件不校验租户是否存在，也不依赖任何租户插件。模板带 `tenantId` 字段（空字符串为全局模板），唯一索引为 `code + type + level + tenantId`。
 
 - `sendMessage` 传 `tenantId` 时，先在该租户启用的模板中按上面的规则选择，没有再回退到全局模板；停用租户模板即恢复全局内容
-- 邮件发送时统一调用 `services.mailSetting.getEmailConfig({ tenantId })`：传了插件配置 `getEmailConfig` 时该方法内部转调宿主实现，没传时读包内存储；返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
+- 邮件发送时统一调用 `services.mailSetting.getEmailConfig({ tenantId })`：传了插件配置 `getEmailConfig` 时内部转调宿主实现，没传时读包内 `t_message_tenant_email_config`；返回配置则用租户 SMTP 发送，发件人为 `fromName` / `fromAddress`（缺省为 `user`），不再走 `senders[0]`；返回空则沿用全局 `emailConfig` / `senders`
 - 发送记录保存 `tenantId`，重发与启动补发同样使用租户模板和 SMTP
 - `template.copy({ id, tenantId })` 把全局模板复制为租户模板；模板列表接口不传 `filter[tenantId]` 时只返回全局模板
 - `verifyEmailConfig({ config, to })` 校验 SMTP 能否登录，传 `to` 时再发一封测试邮件
 
+#### 租户消息设置（mailSetting）
+
+插件自带租户消息设置的默认实现（2.1.1 起），开箱即用；用 `@kne/fastify-tenant` 时可继续用它的实现，两者通过 `getEmailConfig` 切换：
+
+- **内置**：不传 `getEmailConfig` 时，`services.mailSetting` 用内置表 `t_message_tenant_email_config` 存租户 SMTP，并提供 `smtpDetail` / `smtpSave` / `smtpRemove` / `smtpTest` 与 `templateList` / `templateDetail` / `templateCustomize` / `templateSave` / `templateSetStatus` / `templateReset` / `templatePreview`；发送时自动读取该租户已启用的配置
+- **外置**：传了 `getEmailConfig`（如 `fastify.tenant.services.mail.resolveEmailConfig`）时，`services.mailSetting.getEmailConfig` 内部转调宿主实现，内置表不再参与发送；其余方法读写内置表，行为不变
+- 方法集合固定：`services.mailSetting` 在任何插件参数下都完整挂载同一套方法（含 `getEmailConfig` / `smtpSave` / `smtpRemove` / `smtpTest` 与全部 `template*`），增删参数不会让某个方法变成 `undefined`
+- 只按 `getEmailConfig` 有无决定发送取值来源，没有额外开关；租户鉴权与租户是否存在由宿主项目负责，插件只要求 `tenantId` 非空
+
 #### 租户模板开放范围（tenantTemplate）
 
-租户「消息设置」（SMTP、租户模板定制、权限）由 `@kne/fastify-tenant` 统一实现，本插件只决定哪些系统模板可以开放给租户：
+系统模板可给租户定制的范围（白名单 ∩ 平台开关），`mailSetting` 的模板方法复用同一份判断：
 
 - 白名单：插件配置 `mailSettingTemplateCodes`，只有其中的全局系统模板（level 0）可以给租户定制，不传时为全部
 - 平台开关：白名单内的模板默认开放（`tenantOpen` 为 `true`），平台在消息模板管理中通过 `POST /templates/:id/tenant-open` 逐个关闭；`GET /templates` 每条返回 `tenantCustomizable` 标明能否设置
@@ -837,6 +845,31 @@ await fastify.message.services.sendMessage({
 
 模板的 `tenantOpen`（默认 `true`）为 `false` 时，`template*` 方法视为该模板不存在（列表不返回，其它方法返回 404）；平台代租户管理时传 `includeTenantClosed: true` 忽略该限制。租户端由宿主自行鉴权后调用，不要传 `includeTenantClosed`。
 
+##### mailSetting
+
+租户消息设置的包内默认实现（2.1.1 起）：租户 SMTP 配置存储 + 系统模板的租户定制。`services.mailSetting` 的方法集合固定，任何插件参数下都完整挂载同一套方法，不会因为传了 `getEmailConfig` 而少挂某个方法；插件参数只影响发送取值：`getEmailConfig` 是唯一入口，传了宿主实现时由它内部转调（此时包内 SMTP 表不参与发送），没传时读包内表。
+
+| 方法 | 参数 | 说明 |
+|----|----|----|
+| getEmailConfig | `{ tenantId }` | 发送取值入口。传了插件参数 `getEmailConfig` 时原样返回宿主实现的结果，否则返回该租户启用的包内配置（含 `pass`）；未配置、停用或 `tenantId` 为空返回 `null`，发送回退到全局 `emailConfig` |
+| smtpDetail | `{ tenantId }` | 配置详情，不回传 `pass` 只给 `hasPassword`；未配置返回 `{ configured: false, enabled: false, port: 465, secure: true, hasPassword: false }` |
+| smtpSave | `{ tenantId, ...SMTP 字段 }` | 保存配置；`pass` 为空时保留原密码；`enabled !== false` 时先做连接测试，失败返回 400 且不落库 |
+| smtpRemove | `{ tenantId }` | 删除该租户配置 |
+| smtpTest | `{ tenantId, to, ...SMTP 字段 }` | 用已保存密码合并后连接测试，传 `to` 时再发一封测试邮件 |
+| templateList | `{ tenantId, type, codes, includeTenantClosed }` | 可定制模板列表并标注租户定制状态；不传 `type` 时邮件在前、短信在后；`codes` 在可定制范围内再取交集 |
+| templateDetail | `{ tenantId, code, type, includeTenantClosed }` | `{ customized, template }`，未定制时返回系统模板 |
+| templateCustomize | `{ tenantId, code, type, userId, includeTenantClosed }` | 以系统模板为底稿创建租户副本，保留编码与名称并直接启用；已定制则直接返回 |
+| templateSave | `{ tenantId, code, type, subject, content, description, userId, includeTenantClosed }` | 只改主题、正文与说明；未定制时保存即创建副本，校验失败不留副本 |
+| templateSetStatus | `{ tenantId, code, type, status, includeTenantClosed }` | 启停租户副本；未定制返回 404 |
+| templateReset | `{ tenantId, code, type, includeTenantClosed }` | 删除租户副本，恢复使用系统模板；未定制返回 404 |
+| templatePreview | `{ tenantId, code, type, template, props, includeTenantClosed }` | 传 `template` 时渲染未保存内容，变量定义沿用当前生效模板 |
+| withTenantCustomizable | `list` | 2.0.x 兼容入口，等同于 `tenantTemplate.withTenantCustomizable` |
+| setTenantOpen | `{ id, tenantOpen }` | 2.0.x 兼容入口，等同于 `tenantTemplate.setTenantOpen` |
+
+`tenantId` 必填，为空返回 400（统一转成字符串落库，避免数字与字符串产生两份配置）。
+
+可定制范围（白名单 ∩ `tenantOpen` ∩ `level = 0` ∩ 启用）复用 `tenantTemplate`，`mailSetting` 只在其之上维护租户副本（`level = 1` + `tenantId`）。租户副本启用后，`messageTemplate` 与发送只覆盖该租户，其它租户与全局不受影响。
+
 ##### statistics.getOverview
 
 获取消息统计数据概览。
@@ -1027,6 +1060,27 @@ const result = await fastify.message.services.template.send({
 | updatedAt | Date   | -   | 更新时间       |
 
 索引：`code + type + level + tenantId` 唯一。
+
+##### TenantEmailConfig 模型
+
+租户 SMTP 配置，表名 `t_message_tenant_email_config`（`paranoid: false`）。
+
+| 字段          | 类型      | 默认值  | 描述                        |
+|-------------|---------|------|---------------------------|
+| id          | Number  | -    | 主键                        |
+| tenantId    | String  | -    | 租户标识，由宿主项目定义（如客户 id）     |
+| enabled     | Boolean | true | 是否启用，停用时发送回退到全局配置        |
+| host        | String  | -    | SMTP 服务器                  |
+| port        | Number  | 465  | SMTP 端口                   |
+| secure      | Boolean | true | 是否使用 SSL                 |
+| user        | String  | -    | SMTP 账号                   |
+| pass        | String  | -    | SMTP 密码，接口不回传            |
+| fromName    | String  | -    | 发件人名称                     |
+| fromAddress | String  | -    | 发件人地址，为空时使用 SMTP 账号      |
+| createdAt   | Date    | -    | 创建时间                      |
+| updatedAt   | Date    | -    | 更新时间                      |
+
+索引：`tenantId` 唯一。
 
 ##### Record 模型
 
