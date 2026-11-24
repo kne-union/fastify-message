@@ -519,6 +519,48 @@ describe('@kne/fastify-message 模板与消息服务', function () {
       expect(templates[0].content).to.equal('<div>新内容</div>');
     });
 
+    it('should re-enable system template when file is present again after disableMissing', async () => {
+      const { includeTemplate } = fastify.message.services;
+      const { models } = fastify.message;
+
+      await models.template.create({
+        code: 'welcome',
+        type: 0,
+        level: 0,
+        name: '欢迎',
+        subject: '旧主题',
+        content: '<div>旧</div>',
+        status: 0
+      });
+      await models.template.create({
+        code: 'gone',
+        type: 0,
+        level: 0,
+        name: '已移除',
+        subject: 'x',
+        content: '<div>x</div>',
+        status: 0
+      });
+
+      // 空目录：disableMissing 停用全部系统模版
+      await includeTemplate(tempDir);
+      expect((await models.template.findOne({ where: { code: 'welcome' } })).status).to.equal(1);
+      expect((await models.template.findOne({ where: { code: 'gone' } })).status).to.equal(1);
+
+      await fs.writeFile(
+        path.join(tempDir, 'welcome.liquid'),
+        '<!-- subject -->恢复主题<!-- html --><div>恢复</div>'
+      );
+      await includeTemplate(tempDir);
+
+      const welcome = await models.template.findOne({ where: { code: 'welcome' } });
+      expect(welcome.status).to.equal(0);
+      expect(welcome.subject).to.equal('恢复主题');
+      expect(welcome.content).to.equal('<div>恢复</div>');
+      // 目录仍无文件的系统模版保持禁用
+      expect((await models.template.findOne({ where: { code: 'gone' } })).status).to.equal(1);
+    });
+
     it('should skip legacy ejs files and templates with invalid syntax', async () => {
       const { includeTemplate } = fastify.message.services;
       const { models } = fastify.message;
