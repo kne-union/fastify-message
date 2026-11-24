@@ -157,7 +157,7 @@ module.exports = fp(async (fastify, options) => {
     return Object.assign({}, extra, { text: renderText(template.content || '') });
   };
 
-  // 导入模版目录；disableMissing 时把目录中已不存在的系统模版停用（不删除，保留历史记录关联）
+  // 导入模版目录：以目录为系统模版（level 0）来源；文件存在则启用并更新内容，disableMissing 时把目录中已不存在的系统模版停用（不删除，保留历史记录关联）
   const includeTemplate = async (dir, { disableMissing = true } = {}) => {
     if (!dir || !(await fs.exists(dir))) {
       fastify.log.info('template dir not exists');
@@ -198,12 +198,13 @@ module.exports = fp(async (fastify, options) => {
       });
 
       if (codeTemplate) {
-        Object.assign(codeTemplate, fields, { name });
+        // 目录中仍有文件：同步内容并重新启用（修复误 disableMissing 后换回正确目录仍无法发送）
+        Object.assign(codeTemplate, fields, { name, status: 0 });
         await codeTemplate.save();
         fastify.log.info(`update template: ${code}`);
         continue;
       }
-      await models.template.create(Object.assign({ code, type, name, level: 0 }, fields));
+      await models.template.create(Object.assign({ code, type, name, level: 0, status: 0 }, fields));
       fastify.log.info(`create template: ${code}`);
     }
     if (disableMissing) {
